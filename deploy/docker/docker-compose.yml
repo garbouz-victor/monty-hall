@@ -1,0 +1,57 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-joyhub}
+      POSTGRES_USER: ${POSTGRES_USER:-joyhub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - joyhub-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - joyhub-internal
+    security_opt:
+      - no-new-privileges:true
+
+  backend:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-joyhub}
+      POSTGRES_USER: ${POSTGRES_USER:-joyhub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      VISITOR_COOKIE_SECURE: "true"
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      MAX_OPEN_GAMES_PER_VISITOR: ${MAX_OPEN_GAMES_PER_VISITOR:-20}
+    ports:
+      - "10.88.88.2:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 35s
+    networks:
+      - joyhub-internal
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  joyhub-internal:
+    driver: bridge
+
+volumes:
+  joyhub-postgres-data:
+

@@ -1,0 +1,10 @@
+[Interface]
+Address = 10.88.88.1/24
+ListenPort = 51821
+PrivateKey = <VPS_PRIVATE_KEY>
+
+# Local computer
+[Peer]
+PublicKey = <LOCAL_PUBLIC_KEY>
+AllowedIPs = 10.88.88.2/32
+

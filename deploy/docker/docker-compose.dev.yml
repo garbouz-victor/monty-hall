@@ -1,0 +1,7 @@
+# Development-only overlay. It exposes PostgreSQL on loopback so a backend
+# started from the IDE can connect. Do not use this overlay in production.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+
