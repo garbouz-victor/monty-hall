@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:e2e:webkit": "PLAYWRIGHT_WEBKIT=1 playwright test --project=webkit-smoke",
     "test:e2e:full": "bash ../scripts/full-stack-smoke.sh"
   },
   "dependencies": {

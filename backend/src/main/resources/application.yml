@@ -47,6 +47,13 @@ joyhub:
   abuse:
     max-open-games: ${MAX_OPEN_GAMES_PER_VISITOR:20}
     open-game-window: ${OPEN_GAME_WINDOW:PT24H}
+  competition:
+    daily-attempt-limit: ${COMPETITION_DAILY_ATTEMPT_LIMIT:5}
+    cookie:
+      name: ${COMPETITION_COOKIE_NAME:__Host-joyhub_competition}
+      secure: ${COMPETITION_COOKIE_SECURE:true}
+  test:
+    random-sequence: ${JOYHUB_TEST_RANDOM_SEQUENCE:0,0,1}
 
 logging:
   structured:

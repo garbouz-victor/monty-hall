@@ -54,6 +54,12 @@ public class GameRoundEntity {
     @Column(name = "visitor_id", nullable = false)
     private UUID visitorId;
 
+    @Column(name = "competition_run_id")
+    private UUID competitionRunId;
+
+    @Column(name = "competition_round_number")
+    private Integer competitionRoundNumber;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -98,6 +104,18 @@ public class GameRoundEntity {
             Instant createdAt
     ) {
         return new GameRoundEntity(id, creationRequestId, keyBox, nonce, commitment, visitorId, createdAt);
+    }
+
+    public static GameRoundEntity createCompetition(
+            UUID id, UUID creationRequestId, int keyBox, String nonce, String commitment,
+            UUID visitorId, UUID competitionRunId, int competitionRoundNumber, Instant createdAt
+    ) {
+        GameRoundEntity game = new GameRoundEntity(
+                id, creationRequestId, keyBox, nonce, commitment, visitorId, createdAt
+        );
+        game.competitionRunId = competitionRunId;
+        game.competitionRoundNumber = competitionRoundNumber;
+        return game;
     }
 
     public void recordChoice(int initialChoice, int openedBox, Instant at) {
@@ -162,4 +180,9 @@ public class GameRoundEntity {
     public UUID getVisitorId() {
         return visitorId;
     }
+
+    public UUID getCompetitionRunId() { return competitionRunId; }
+    public Integer getCompetitionRoundNumber() { return competitionRoundNumber; }
+    public Instant getCreatedAt() { return createdAt; }
+    public Instant getCompletedAt() { return completedAt; }
 }

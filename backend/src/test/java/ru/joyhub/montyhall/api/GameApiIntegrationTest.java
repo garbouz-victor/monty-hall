@@ -394,6 +394,7 @@ class GameApiIntegrationTest {
 
         mvc.perform(post("/api/v1/games/{id}/choice", UUID.randomUUID())
                         .cookie(game.cookie())
+                        .header("X-JoyHub-CSRF", "1")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"box\":1}"))
                 .andExpect(status().isNotFound())
@@ -401,6 +402,7 @@ class GameApiIntegrationTest {
 
         mvc.perform(post("/api/v1/games/not-a-uuid/choice")
                         .cookie(game.cookie())
+                        .header("X-JoyHub-CSRF", "1")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"box\":1}"))
                 .andExpect(status().isBadRequest())
@@ -414,6 +416,7 @@ class GameApiIntegrationTest {
 
         mvc.perform(post("/api/v1/games/{id}/choice", firstVisitorGame.id())
                         .cookie(secondVisitorGame.cookie())
+                        .header("X-JoyHub-CSRF", "1")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"box\":1}"))
                 .andExpect(status().isNotFound());
@@ -538,6 +541,7 @@ class GameApiIntegrationTest {
     private org.springframework.test.web.servlet.ResultActions choose(StartedGame game, int box) throws Exception {
         return mvc.perform(post("/api/v1/games/{id}/choice", game.id())
                 .cookie(game.cookie())
+                .header("X-JoyHub-CSRF", "1")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"box\":%d}".formatted(box)));
     }
@@ -545,6 +549,7 @@ class GameApiIntegrationTest {
     private org.springframework.test.web.servlet.ResultActions decide(StartedGame game, String strategy) throws Exception {
         return mvc.perform(post("/api/v1/games/{id}/decision", game.id())
                 .cookie(game.cookie())
+                .header("X-JoyHub-CSRF", "1")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"strategy\":\"%s\"}".formatted(strategy)));
     }

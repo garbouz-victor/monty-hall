@@ -39,7 +39,7 @@ function httpErrorKind(status: number): ApiErrorKind {
   return "CLIENT";
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
@@ -77,37 +77,39 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function checkHealth(): Promise<void> {
-  const health = await request<{ status: string }>("/api/v1/health");
+  const health = await apiRequest<{ status: string }>("/api/v1/health");
   if (health.status !== "UP") {
     throw new ApiError("Игровой сервер временно недоступен.", "SERVER", 503);
   }
 }
 
 export function createGame(creationRequestId: string): Promise<CreatedGame> {
-  return request<CreatedGame>("/api/v1/games", {
+  return apiRequest<CreatedGame>("/api/v1/games", {
     method: "POST",
     headers: { "Idempotency-Key": creationRequestId },
   });
 }
 
 export function makeChoice(gameId: string, box: BoxNumber): Promise<ChoiceResult> {
-  return request<ChoiceResult>(`/api/v1/games/${gameId}/choice`, {
+  return apiRequest<ChoiceResult>(`/api/v1/games/${gameId}/choice`, {
     method: "POST",
+    headers: { "X-JoyHub-CSRF": "1" },
     body: JSON.stringify({ box }),
   });
 }
 
 export function makeDecision(gameId: string, strategy: Strategy): Promise<CompletedGame> {
-  return request<CompletedGame>(`/api/v1/games/${gameId}/decision`, {
+  return apiRequest<CompletedGame>(`/api/v1/games/${gameId}/decision`, {
     method: "POST",
+    headers: { "X-JoyHub-CSRF": "1" },
     body: JSON.stringify({ strategy }),
   });
 }
 
 export function getGameState(gameId: string): Promise<GameStateResponse> {
-  return request<GameStateResponse>(`/api/v1/games/${gameId}`);
+  return apiRequest<GameStateResponse>(`/api/v1/games/${gameId}`);
 }
 
 export function getStats(): Promise<PublicStats> {
-  return request<PublicStats>("/api/v1/stats");
+  return apiRequest<PublicStats>("/api/v1/stats");
 }

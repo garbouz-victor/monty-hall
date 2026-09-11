@@ -1,4 +1,7 @@
 joyhub:
   visitor-cookie:
     secure: false
-
+  competition:
+    cookie:
+      name: joyhub_competition_dev
+      secure: false

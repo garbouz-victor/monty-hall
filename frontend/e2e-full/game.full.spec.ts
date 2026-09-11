@@ -16,7 +16,11 @@ test("real frontend → backend → PostgreSQL Monty Hall flow", async ({ page, 
 
   await page.goto("/");
   await expect(page.getByRole("button", { name: "Выбрать ящик 3" })).toBeVisible();
-  await expect(page.locator(".total-games")).toContainText("0");
+  const initialTotal = await page.evaluate(async () => {
+    const response = await fetch("/api/v1/stats");
+    return (await response.json()).totalCompletedGames as number;
+  });
+  await expect(page.locator(".total-games")).toContainText(String(initialTotal));
   expect((await context.cookies()).some((cookie) => cookie.name === "joyhub_visitor")).toBe(false);
   expect(mutationRequests).toEqual([]);
 
@@ -68,5 +72,5 @@ test("real frontend → backend → PostgreSQL Monty Hall flow", async ({ page, 
   await switchButton.click();
   await expect(page.getByText(/^(🎉 Вы выиграли!|Не повезло 🙂)$/)).toBeVisible();
   await expect(page.getByRole("status")).toContainText("Честность игры проверена");
-  await expect(page.locator(".total-games")).toContainText("1");
+  await expect(page.locator(".total-games")).toContainText(String(initialTotal + 1));
 });

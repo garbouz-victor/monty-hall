@@ -142,7 +142,7 @@ export function StatsSection({ stats, loading, reveal, onRetry }: StatsSectionPr
                   <span>Пока игр немного, поэтому результаты могут заметно отличаться от теории.</span>
                 </p>
               ) : null}
-              <p className="stats-note">Статистика по завершённым играм. Считаются партии, а не уникальные игроки.</p>
+              <p className="stats-note">Статистика по завершённым играм обычного и соревновательного режимов. Считаются партии, а не уникальные игроки.</p>
               <details className="explanation">
                 <summary>Почему смена выбора выгоднее?</summary>
                 <div>

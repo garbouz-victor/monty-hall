@@ -7,6 +7,7 @@ import jakarta.validation.constraints.NotNull;
 import ru.joyhub.montyhall.application.GameResults;
 import ru.joyhub.montyhall.domain.GameState;
 import ru.joyhub.montyhall.domain.Strategy;
+import ru.joyhub.competition.api.CompetitionApiModels;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -43,7 +44,8 @@ public final class GameApiModels {
             int keyBox,
             boolean won,
             String nonce,
-            String commitment
+            String commitment,
+            CompetitionApiModels.RunResponse competition
     ) {
         static DecisionResponse from(GameResults.Completed result) {
             return new DecisionResponse(
@@ -55,7 +57,8 @@ public final class GameApiModels {
                     result.keyBox(),
                     result.won(),
                     result.nonce(),
-                    result.commitment()
+                    result.commitment(),
+                    result.competition() == null ? null : CompetitionApiModels.RunResponse.from(result.competition())
             );
         }
     }
@@ -73,7 +76,7 @@ public final class GameApiModels {
             Boolean won,
             String nonce
     ) {
-        static GameStateResponse from(GameResults.GameSnapshot snapshot) {
+        public static GameStateResponse from(GameResults.GameSnapshot snapshot) {
             return new GameStateResponse(
                     snapshot.gameId(), snapshot.state(), snapshot.commitment(),
                     snapshot.initialChoice(), snapshot.openedBox(), snapshot.switchToBox(),

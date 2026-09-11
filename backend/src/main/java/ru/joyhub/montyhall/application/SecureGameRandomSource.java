@@ -1,11 +1,13 @@
 package ru.joyhub.montyhall.application;
 
 import org.springframework.stereotype.Component;
+import org.springframework.context.annotation.Profile;
 
 import java.security.SecureRandom;
 import java.util.HexFormat;
 
 @Component
+@Profile("!full-stack-test")
 public class SecureGameRandomSource implements GameRandomSource {
 
     private static final int NONCE_BYTES = 32;
@@ -23,4 +25,3 @@ public class SecureGameRandomSource implements GameRandomSource {
         return HexFormat.of().formatHex(nonce);
     }
 }
-

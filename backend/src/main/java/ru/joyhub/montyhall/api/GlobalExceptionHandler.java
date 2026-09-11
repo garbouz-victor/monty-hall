@@ -16,6 +16,7 @@ import ru.joyhub.montyhall.application.GameNotFoundException;
 import ru.joyhub.montyhall.application.InvalidGameTransitionException;
 import ru.joyhub.montyhall.application.IdempotencyKeyConflictException;
 import ru.joyhub.montyhall.application.TooManyOpenGamesException;
+import ru.joyhub.competition.application.CompetitionException;
 
 import java.net.URI;
 
@@ -57,6 +58,12 @@ public class GlobalExceptionHandler {
                 "Завершите одну из начатых партий или попробуйте позже.",
                 request
         );
+    }
+
+    @ExceptionHandler(CompetitionException.class)
+    ResponseEntity<ProblemDetail> competition(CompetitionException exception, HttpServletRequest request) {
+        return problem(HttpStatus.valueOf(exception.status()), exception.code(),
+                "Действие соревнования недоступно", exception.getMessage(), request);
     }
 
     @ExceptionHandler({

@@ -28,6 +28,7 @@ backend/src/main/java/ru/joyhub/
   montyhall/application/  use cases, транзакции, commitment
   montyhall/api/          REST DTO, controllers, ошибки, visitor cookie
   montyhall/persistence/  JPA entity, repository, SQL-агрегация
+  competition/            профиль, попытки, рейтинг и конкурсный API
   config/                 clock и request correlation id
 
 frontend/src/
@@ -70,6 +71,20 @@ Frontend хранит отправленное, но ещё не подтвер�
 | `GET` | `/api/v1/stats` | Агрегаты завершённых партий по каждой стратегии |
 | `GET` | `/api/v1/health` | Нечувствительный health backend + database |
 
+Конкурсный режим использует отдельные endpoints:
+
+| Method | Path | Назначение |
+|---|---|---|
+| `GET` | `/api/v1/competition/me` | Профиль, московский день, квота, рекорды и восстанавливаемая попытка/раунд; GET ничего не создаёт |
+| `PUT` | `/api/v1/competition/profile` | Создать профиль или изменить публичное имя |
+| `POST` | `/api/v1/competition/runs` | Явно начать попытку; обязателен `Idempotency-Key: UUID` |
+| `GET` | `/api/v1/competition/runs/{runId}` | Восстановить принадлежащую профилю попытку |
+| `POST` | `/api/v1/competition/runs/{runId}/rounds` | Закрепить `expectedRoundNumber`; обязателен `Idempotency-Key`, initial choice не принимается |
+| `POST` | `/api/v1/competition/runs/{runId}/abandon` | Добровольно завершить попытку без возврата слота |
+| `GET` | `/api/v1/competition/leaderboard?period=TODAY&limit=10` | Публичный рейтинг; поддерживает `ALL_TIME`, максимум 10 строк |
+
+Cookie-based конкурсные mutations и старые `choice`/`decision` требуют `X-JoyHub-CSRF: 1`. Cross-origin JavaScript не может добавить этот заголовок без CORS preflight, а сервер CORS не разрешает; `Sec-Fetch-Site: cross-site` также отклоняется. `SameSite=Lax` остаётся дополнительной защитой.
+
 Пример с сохранением анонимной cookie и безопасным повтором создания:
 
 ```bash
@@ -91,10 +106,12 @@ curl -sS \
 
 curl -sS -b /tmp/joyhub-cookie \
   -H 'Content-Type: application/json' \
+  -H 'X-JoyHub-CSRF: 1' \
   -d '{"box":3}' \
   http://localhost:8080/api/v1/games/GAME_ID/choice
 curl -sS -b /tmp/joyhub-cookie \
   -H 'Content-Type: application/json' \
+  -H 'X-JoyHub-CSRF: 1' \
   -d '{"strategy":"SWITCH"}' \
   http://localhost:8080/api/v1/games/GAME_ID/decision
 ```
@@ -127,9 +144,27 @@ commitment = lowercaseHex(SHA-256(UTF-8(canonical)))
 
 Запись `CREATED` с ключами, nonce и commitment уже сохранена до `POST /choice`, поэтому первый выбор не может повлиять на расположение ключей. До `decision` наружу выходит только commitment. После завершения API раскрывает `keyBox` и hex-encoded nonce. Frontend заново считает SHA-256 через Web Crypto API и показывает результат проверки. `nonce` и `keyBox` незавершённой игры не попадают в application logs.
 
+## Соревнование по серии побед
+
+Режим добровольный: обычная игра остаётся первым экраном, не требует имени и не имеет конкурсной квоты. Сохранение имени, просмотр рейтинга, reload и открытие формы не расходуют попытку. Слот резервирует только «Начать попытку». Лимит задаёт `COMPETITION_DAILY_ATTEMPT_LIMIT` (по умолчанию 5).
+
+Одна `competition_run` содержит последовательность обычных раундов до первого поражения. Победа в одной транзакции завершает `game_round` и увеличивает `score` на один; поражение переводит попытку в `LOST`, не обнуляя score. `ABANDONED` означает добровольное завершение, `EXPIRED` — дневную границу. Следующая попытка начинается с нуля, личный рекорд равен `MAX(score)` и не уменьшается.
+
+Конкурсный день задан как `Europe/Moscow`: `[00:00, следующие 00:00)`. Backend использует инжектируемый `Clock`, сохраняет `competition_date`, `started_at`, `expires_at` и `rules_version=1`. Время `acceptedAt` берётся после блокировок; при `acceptedAt == expiresAt` попытка истекла. Cron не нужен: чтение показывает эффективное истечение, следующая команда/старт закрывает просроченную ACTIVE-попытку. Replay уже завершённого decision после полуночи возвращает прежний результат без второго очка.
+
+Порядок блокировок для конкурсных mutations — `competition_player → competition_run → game_round`. PostgreSQL uniqueness защищает один ACTIVE run, один номер раунда и один незавершённый раунд. Start и create-round получают клиентские UUID до первого запроса. Один `expectedRoundNumber` возвращает уже закреплённые gameId/commitment даже при разных ключах из двух вкладок. Раунд создаётся только после выбора ящика в UI, а choice передаётся отдельным запросом: commitment сформирован раньше initial choice.
+
+После reload frontend читает `/competition/me` и восстанавливает ACTIVE/LOST run и `CREATED`, `CHOICE_MADE` либо `COMPLETED` round. Versioned журнал в `sessionStorage` хранит только run/round, idempotency UUID, gameId, исходный commitment, box и pending strategy. Credential, visitorId, keyBox и nonce туда не попадают. При неоднозначной ошибке альтернативный box/strategy заблокирован до server recovery или безопасного повтора. Если исходный commitment потерян вместе с журналом, результат сохраняется, но UI не заявляет независимую проверку.
+
+Владение подтверждает отдельная 32-байтная CSPRNG credential cookie. Production имя — `__Host-joyhub_competition`, атрибуты `HttpOnly; Secure; SameSite=Lax; Path=/`; dev/smoke используют отдельное имя без `__Host-` и допускают HTTP. В БД хранится SHA-256 hash и expiry, TTL 365 дней проверяется сервером. Имя, public ID/tag, visitor cookie, gameId и idempotency key не дают доступ к профилю. Конкурсные строки на старых `/games/{id}` endpoints дополнительно требуют credential владельца. Очистка cookies/другой браузер создают новый профиль; восстановление по имени не обещается.
+
+Имя нормализуется NFC, обрезается, повторные пробелы схлопываются; разрешены 2–20 Unicode code points из букв, цифр, пробелов, дефиса и подчёркивания. Одинаковые имена допустимы и различаются stable public tag. Имя выводится только как текст. Для локального административного исключения после проверки используйте `UPDATE competition_player SET excluded_from_leaderboard=TRUE WHERE public_id='...';` через закрытый доступ к БД; публичного admin endpoint нет.
+
+«Сегодня» берёт лучший score каждого профиля за текущую дату, `ALL_TIME` — лучший score этой версии правил. Нулевые результаты не публикуются. Место равно `1 + число профилей с большим score`, поэтому возможны `1, 2, 2, 4`; время достижения служит только стабильным порядком. Публичный response кешируется на 15 секунд и не содержит персональных данных `me`; личный результат приходит из private `no-store` endpoint. All-time — доска рекордов, а не рейтинг мастерства: большая история участия даёт больше возможностей установить серию.
+
 ## Схема PostgreSQL
 
-Flyway-миграция [V1__create_game_round.sql](backend/src/main/resources/db/migration/V1__create_game_round.sql) создаёт `game_round`, а [V2__add_creation_request_id.sql](backend/src/main/resources/db/migration/V2__add_creation_request_id.sql) добавляет idempotency token. Для существующих строк V2 безопасно подставляет `id` партии, затем включает `NOT NULL` и unique constraint:
+Flyway-миграция [V1__create_game_round.sql](backend/src/main/resources/db/migration/V1__create_game_round.sql) создаёт `game_round`, [V2__add_creation_request_id.sql](backend/src/main/resources/db/migration/V2__add_creation_request_id.sql) добавляет idempotency token, а [V3__add_competition.sql](backend/src/main/resources/db/migration/V3__add_competition.sql) добавляет конкурсные таблицы и nullable связь старых раундов. V1/V2 не изменялись; накопленные партии остаются обычными и не входят в рейтинг задним числом.
 
 ```text
 id UUID PK                 creation_request_id UUID NOT NULL UNIQUE
@@ -140,6 +175,8 @@ strategy SWITCH | STAY     final_choice INTEGER     won BOOLEAN
 visitor_id UUID            created_at TIMESTAMPTZ   completed_at TIMESTAMPTZ
 version BIGINT
 ```
+
+`competition_player` хранит внутренний/public UUID, public tag, display name, hash/expiry credential, timestamps и флаг исключения. `competition_run` хранит owner, start request UUID, московскую дату/номер попытки, статус, монотонный score, время достижения, границы, rules version и optimistic version. В `game_round` добавлены nullable `competition_run_id` и `competition_round_number`; `NULL` означает обычный режим. Общая статистика продолжает считать все завершённые раунды обоих режимов по прежним формулам.
 
 Check constraints контролируют диапазоны и полноту каждого состояния. Частичные индексы покрывают завершённые партии `(completed_at)` и `(strategy, won)`, а также незавершённые партии visitor. В production используется `hibernate.ddl-auto=validate`; Hibernate не создаёт и не изменяет схему.
 
@@ -207,9 +244,12 @@ Playwright запускает собранный frontend, перехватыв�
 
 ```bash
 cd frontend
-npx playwright install chromium
+npx playwright install chromium webkit
 npm run test:e2e
+npm run test:e2e:webkit
 ```
+
+Основной локальный прогон использует Chromium. Отдельная команда WebKit запускает короткий smoke; в CI `PLAYWRIGHT_WEBKIT=1` включает оба движка после установки их системных зависимостей.
 
 Отдельный smoke-тест поднимает настоящий PostgreSQL и Spring Boot через Docker Compose, запускает Vite preview и проходит один flow в Chromium без API mocks:
 
@@ -218,7 +258,9 @@ cd frontend
 npm run test:e2e:full
 ```
 
-Он проверяет отсутствие `POST /games` до первого выбора, UUID в `Idempotency-Key`, повтор create с тем же ответом, порядок `POST /games` → `POST /choice`, сокрытие секрета, восстановимый `CHOICE_MADE`, SWITCH, Web Crypto verification и прирост статистики на одну завершённую партию. Backend integration tests отдельно покрывают REST → transaction → PostgreSQL, миграцию V2, восстановление cookie, конфликт владельцев, лимит и concurrent identical create/decision. CI-конфигурация находится в [.github/workflows/ci.yml](.github/workflows/ci.yml) и запускает backend verify, component tests, build, оба Playwright-набора, Compose validation и Nginx checks.
+Он проверяет отсутствие `POST /games` до первого выбора, UUID в `Idempotency-Key`, повтор create с тем же ответом, порядок `POST /games` → `POST /choice`, сокрытие секрета, восстановимый `CHOICE_MADE`, SWITCH, Web Crypto verification и прирост статистики. Competition smoke проходит настоящий профиль → start → W,W,L, теряет реальные ответы победного и проигрышного decision после commit, восстанавливает score без повторного начисления и проверяет leaderboard. Детерминированный random включается только disposable профилем `full-stack-test`; production использует `SecureGameRandomSource`.
+
+Backend integration tests покрывают V3, W,W,L, первое поражение, новый run с нуля, replay/quota, конкурентные start/round, credential/CSRF/ownership, московскую границу, переименование и места `1,2,2,4`. Frontend tests закрепляют opt-in, явный start, reload между create-round и choice, lost-decision recovery, pause, periods и обычные регрессии. CI-конфигурация находится в [.github/workflows/ci.yml](.github/workflows/ci.yml) и запускает backend verify, component tests, build, оба Playwright-набора, Compose validation и Nginx checks.
 
 ## Mobile-first интерфейс
 
@@ -277,6 +319,8 @@ curl --fail http://10.88.88.2:8080/api/v1/health
 Production compose публикует backend ровно как `10.88.88.2:8080:8080`. У PostgreSQL нет `ports`; он виден только backend-контейнеру. Данные лежат в named volume `joyhub-postgres-data`. Оба контейнера имеют `restart: unless-stopped` и healthcheck.
 
 ## Production: frontend, Nginx и TLS на VPS
+
+Реальный VPS уже использует отдельную certificate-конфигурацию в `/etc/nginx/ssl/joy-hub.ru/`. Не заменяйте её путями Certbot из репозиторного шаблона: сначала перенесите только новые application/location settings в действующий конфиг, сохраните его копию и выполните `nginx -t`. Шаги Certbot ниже относятся только к чистой установке без существующего TLS.
 
 1. Создайте DNS `A` records для `joy-hub.ru` и `www.joy-hub.ru`, направленные на public IPv4 VPS. Добавляйте `AAAA` только если VPS и firewall корректно обслуживают IPv6.
 2. Соберите frontend локально и скопируйте только содержимое `dist`:
@@ -348,7 +392,7 @@ for path in / /index.html /assets/ASSET_NAME.js /api/v1/health; do
 done
 ```
 
-Nginx ограничивает создание игр до 5 запросов/с на IP с небольшим burst, stats — до 30 запросов/мин, остальные API — до 20 запросов/с. Дополнительно backend разрешает visitor не более 20 незавершённых партий за последние 24 часа. Эти лимиты позволяют быстро нажимать «Сыграть ещё раз», но гасят очевидный спам. IP используется Nginx только для оперативного rate limit и стандартного access log; пример logrotate хранит не больше семи дневных файлов.
+Nginx ограничивает создание игр до 5 запросов/с на IP с небольшим burst, конкурсные записи профиля/start/round/abandon — до 5 запросов/с с burst 10, stats — до 30 запросов/мин, остальные API — до 20 запросов/с. Дополнительно backend разрешает visitor не более 20 незавершённых партий за последние 24 часа, а конкурсный профиль — не более 5 новых попыток за московский день. IP-лимит только сглаживает всплески и не заменяет профильную квоту, поэтому несколько игроков за общим NAT не делят пять попыток. IP используется Nginx только для оперативного rate limit и стандартного access log; пример logrotate хранит не больше семи дневных файлов.
 
 Незавершёнными считаются только реально созданные `CREATED` и `CHOICE_MADE` записи за последние 24 часа. Открытие и обновление страницы их больше не создаёт. Старые незавершённые строки пока сохраняются для диагностики; если объём станет значимым, их можно удалять отдельной retention-задачей. Scheduler в приложение в этой итерации не добавлен.
 
@@ -360,7 +404,16 @@ Structured ECS JSON logs доступны через:
 docker compose --env-file .env -f deploy/docker/docker-compose.yml logs -f backend
 ```
 
-В lifecycle logs присутствуют отдельные события `game_created` и `game_create_replayed` с `gameId`, но нет `Idempotency-Key`, secret или nonce. Каждый HTTP-ответ имеет `X-Request-Id`; безопасный внешний health — `/api/v1/health`, внутренний actuator health не публикуется отдельным host-портом.
+Read-only integrity/product report находится в [competition-audit.sql](deploy/sql/competition-audit.sql). Первые запросы должны вернуть ноль расхождений score и нумерации; остальные считают стартовавшие браузерные профили, повторные попытки и возврат в другой день. Частоту recovery оценивайте по structured событиям `*_replayed`; это сигналы повторов, а не число людей и не доказательство сетевого сбоя:
+
+```bash
+docker compose --env-file .env -f deploy/docker/docker-compose.yml exec -T postgres \
+  psql -U joyhub -d joyhub -v ON_ERROR_STOP=1 < deploy/sql/competition-audit.sql
+docker compose --env-file .env -f deploy/docker/docker-compose.yml logs backend | \
+  grep -E 'competition_.*_replayed'
+```
+
+В lifecycle logs присутствуют `game_created`, `game_create_replayed`, start/end/expiry попытки, подтверждённый score и competition replay с безопасными runId/gameId. В них нет credential, `Idempotency-Key`, secret или nonce. Каждый HTTP-ответ имеет `X-Request-Id`; безопасный внешний health — `/api/v1/health`, внутренний actuator health не публикуется отдельным host-портом.
 
 Перед обновлением backend сделайте backup базы:
 

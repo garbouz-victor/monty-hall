@@ -383,7 +383,7 @@ describe("Monty Hall application", () => {
     expect(await screen.findByText((_, node) => node?.classList.contains("total-games") ?? false)).toHaveTextContent("18 342");
     expect(screen.getByText("66,8%")).toBeInTheDocument();
     expect(screen.getByText("33,2%")).toBeInTheDocument();
-    expect(screen.getByText("Статистика по завершённым играм. Считаются партии, а не уникальные игроки.")).toBeInTheDocument();
+    expect(screen.getByText("Статистика по завершённым играм обычного и соревновательного режимов. Считаются партии, а не уникальные игроки.")).toBeInTheDocument();
   });
 
   it("shows a finite unavailable state and retries without creating a game", async () => {

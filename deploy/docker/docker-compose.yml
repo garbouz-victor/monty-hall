@@ -30,6 +30,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-joyhub}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       VISITOR_COOKIE_SECURE: "true"
+      COMPETITION_COOKIE_NAME: "__Host-joyhub_competition"
+      COMPETITION_COOKIE_SECURE: "true"
+      COMPETITION_DAILY_ATTEMPT_LIMIT: ${COMPETITION_DAILY_ATTEMPT_LIMIT:-5}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
       MAX_OPEN_GAMES_PER_VISITOR: ${MAX_OPEN_GAMES_PER_VISITOR:-20}
     ports:
@@ -54,4 +57,3 @@ networks:
 
 volumes:
   joyhub-postgres-data:
-

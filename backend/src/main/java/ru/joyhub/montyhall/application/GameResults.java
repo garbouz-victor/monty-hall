@@ -2,6 +2,7 @@ package ru.joyhub.montyhall.application;
 
 import ru.joyhub.montyhall.domain.Strategy;
 import ru.joyhub.montyhall.domain.GameState;
+import ru.joyhub.competition.application.CompetitionResults;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -26,7 +27,8 @@ public final class GameResults {
             int keyBox,
             boolean won,
             String nonce,
-            String commitment
+            String commitment,
+            CompetitionResults.Run competition
     ) {
     }
 

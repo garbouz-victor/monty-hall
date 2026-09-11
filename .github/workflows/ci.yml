@@ -35,11 +35,13 @@ jobs:
         run: |
           npm test
           npm run build
-      - name: Install Chromium
+      - name: Install Chromium and WebKit
         working-directory: frontend
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium webkit
       - name: Browser tests
         working-directory: frontend
+        env:
+          PLAYWRIGHT_WEBKIT: "1"
         run: npm run test:e2e
       - name: Full-stack smoke test
         working-directory: frontend

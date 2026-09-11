@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import ru.joyhub.montyhall.application.GameService;
+import ru.joyhub.competition.api.CompetitionCredentialService;
 
 import java.util.UUID;
 
@@ -30,10 +31,13 @@ public class GameController {
 
     private final GameService gameService;
     private final VisitorIdentityService visitors;
+    private final CompetitionCredentialService competitionCredentials;
 
-    public GameController(GameService gameService, VisitorIdentityService visitors) {
+    public GameController(GameService gameService, VisitorIdentityService visitors,
+                          CompetitionCredentialService competitionCredentials) {
         this.gameService = gameService;
         this.visitors = visitors;
+        this.competitionCredentials = competitionCredentials;
     }
 
     @PostMapping("/games")
@@ -43,7 +47,9 @@ public class GameController {
             HttpServletRequest request,
             HttpServletResponse response
     ) {
-        var result = gameService.create(creationRequestId, visitors.find(request));
+        var result = gameService.create(
+                creationRequestId, visitors.find(request), competitionCredentials.findPlayerId(request)
+        );
         visitors.write(response, result.visitorId());
         return CreateGameResponse.from(result);
     }
@@ -56,7 +62,9 @@ public class GameController {
             HttpServletResponse response
     ) {
         UUID visitorId = visitors.resolve(request, response);
-        return ChoiceResponse.from(gameService.choose(gameId, visitorId, body.box()));
+        return ChoiceResponse.from(gameService.choose(
+                gameId, visitorId, body.box(), competitionCredentials.findPlayerId(request)
+        ));
     }
 
     @GetMapping("/games/{gameId}")
@@ -66,7 +74,9 @@ public class GameController {
             HttpServletResponse response
     ) {
         UUID visitorId = visitors.resolve(request, response);
-        return GameStateResponse.from(gameService.getState(gameId, visitorId));
+        return GameStateResponse.from(gameService.getState(
+                gameId, visitorId, competitionCredentials.findPlayerId(request)
+        ));
     }
 
     @PostMapping("/games/{gameId}/decision")
@@ -77,7 +87,9 @@ public class GameController {
             HttpServletResponse response
     ) {
         UUID visitorId = visitors.resolve(request, response);
-        return DecisionResponse.from(gameService.decide(gameId, visitorId, body.strategy()));
+        return DecisionResponse.from(gameService.decide(
+                gameId, visitorId, body.strategy(), competitionCredentials.findPlayerId(request)
+        ));
     }
 
     @GetMapping("/stats")

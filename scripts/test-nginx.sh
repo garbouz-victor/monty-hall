@@ -13,6 +13,8 @@ trap cleanup EXIT
 
 mkdir -p "$fixture_root/conf" "$fixture_root/certs/live/joy-hub.ru" "$fixture_root/www"
 cp -R "$repo_root/frontend/dist/." "$fixture_root/www/"
+sed 's/server 10\.88\.88\.2:8080/server 127.0.0.1:9/' \
+  "$repo_root/deploy/nginx/joy-hub.conf" > "$fixture_root/conf/joy-hub.conf"
 
 cat > "$fixture_root/conf/nginx.conf" <<'EOF'
 events {}
@@ -47,12 +49,12 @@ docker run --rm "${common_mounts[@]}" \
   "$nginx_image" nginx -t
 
 docker run --rm "${common_mounts[@]}" "${tls_mounts[@]}" \
-  --volume "$repo_root/deploy/nginx/joy-hub.conf:/etc/nginx/sites-enabled/joy-hub.conf:ro" \
+  --volume "$fixture_root/conf/joy-hub.conf:/etc/nginx/sites-enabled/joy-hub.conf:ro" \
   "$nginx_image" nginx -t
 
 docker run --detach --name "$container_name" --publish 127.0.0.1:18443:443 \
   "${common_mounts[@]}" "${tls_mounts[@]}" \
-  --volume "$repo_root/deploy/nginx/joy-hub.conf:/etc/nginx/sites-enabled/joy-hub.conf:ro" \
+  --volume "$fixture_root/conf/joy-hub.conf:/etc/nginx/sites-enabled/joy-hub.conf:ro" \
   "$nginx_image" >/dev/null
 
 assert_security_headers() {

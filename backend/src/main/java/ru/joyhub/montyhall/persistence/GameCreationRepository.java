@@ -12,8 +12,10 @@ import java.util.UUID;
 public class GameCreationRepository {
 
     private static final String FIND = """
-            SELECT id, commitment, visitor_id
-            FROM game_round
+            SELECT g.id, g.commitment, g.visitor_id, g.competition_run_id,
+                   r.player_id AS competition_player_id, g.competition_round_number
+            FROM game_round g
+            LEFT JOIN competition_run r ON r.id = g.competition_run_id
             WHERE creation_request_id = ?
             """;
 
@@ -23,6 +25,15 @@ public class GameCreationRepository {
                 visitor_id, created_at, version
             )
             VALUES (?, ?, 'CREATED', ?, ?, ?, ?, ?, 0)
+            ON CONFLICT (creation_request_id) DO NOTHING
+            """;
+
+    private static final String INSERT_COMPETITION = """
+            INSERT INTO game_round (
+                id, creation_request_id, state, key_box, nonce, commitment,
+                visitor_id, created_at, version, competition_run_id, competition_round_number
+            )
+            VALUES (?, ?, 'CREATED', ?, ?, ?, ?, ?, 0, ?, ?)
             ON CONFLICT (creation_request_id) DO NOTHING
             """;
 
@@ -38,7 +49,10 @@ public class GameCreationRepository {
                 (resultSet, rowNumber) -> new CreationRecord(
                         resultSet.getObject("id", UUID.class),
                         resultSet.getString("commitment"),
-                        resultSet.getObject("visitor_id", UUID.class)
+                        resultSet.getObject("visitor_id", UUID.class),
+                        resultSet.getObject("competition_run_id", UUID.class),
+                        resultSet.getObject("competition_player_id", UUID.class),
+                        resultSet.getObject("competition_round_number", Integer.class)
                 ),
                 creationRequestId
         ).stream().findFirst();
@@ -69,7 +83,23 @@ public class GameCreationRepository {
         return new CreationAttempt(stored, inserted == 1);
     }
 
-    public record CreationRecord(UUID gameId, String commitment, UUID visitorId) {
+    public CreationAttempt insertCompetitionOrGet(
+            UUID creationRequestId, UUID gameId, int keyBox, String nonce, String commitment,
+            UUID visitorId, Instant createdAt, UUID runId, int roundNumber
+    ) {
+        int inserted = jdbcTemplate.update(
+                INSERT_COMPETITION, gameId, creationRequestId, keyBox, nonce, commitment,
+                visitorId, Timestamp.from(createdAt), runId, roundNumber
+        );
+        CreationRecord stored = find(creationRequestId)
+                .orElseThrow(() -> new IllegalStateException("Created competition game could not be read back"));
+        return new CreationAttempt(stored, inserted == 1);
+    }
+
+    public record CreationRecord(
+            UUID gameId, String commitment, UUID visitorId, UUID competitionRunId,
+            UUID competitionPlayerId, Integer competitionRoundNumber
+    ) {
     }
 
     public record CreationAttempt(CreationRecord game, boolean created) {

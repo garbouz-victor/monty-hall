@@ -19,5 +19,23 @@ public interface GameRoundRepository extends JpaRepository<GameRoundEntity, UUID
 
     Optional<GameRoundEntity> findByIdAndVisitorId(UUID id, UUID visitorId);
 
+    @Query("""
+            select game.id as id, game.competitionRunId as competitionRunId
+            from GameRoundEntity game
+            where game.id = :id and game.visitorId = :visitorId
+            """)
+    Optional<GameLockPreview> findLockPreview(@Param("id") UUID id, @Param("visitorId") UUID visitorId);
+
+    Optional<GameRoundEntity> findByCompetitionRunIdAndCompetitionRoundNumber(UUID runId, int roundNumber);
+
+    Optional<GameRoundEntity> findFirstByCompetitionRunIdOrderByCompetitionRoundNumberDesc(UUID runId);
+
+    Optional<GameRoundEntity> findByCreationRequestId(UUID creationRequestId);
+
     long countByVisitorIdAndStateNotAndCreatedAtAfter(UUID visitorId, GameState state, Instant createdAfter);
+
+    interface GameLockPreview {
+        UUID getId();
+        UUID getCompetitionRunId();
+    }
 }

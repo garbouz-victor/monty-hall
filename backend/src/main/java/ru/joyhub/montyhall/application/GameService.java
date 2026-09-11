@@ -14,6 +14,13 @@ import ru.joyhub.montyhall.persistence.GameCreationRepository;
 import ru.joyhub.montyhall.persistence.GameRoundEntity;
 import ru.joyhub.montyhall.persistence.GameRoundRepository;
 import ru.joyhub.montyhall.persistence.StatsQueryRepository;
+import ru.joyhub.competition.application.CompetitionException;
+import ru.joyhub.competition.application.CompetitionResults;
+import ru.joyhub.competition.application.CompetitionService;
+import ru.joyhub.competition.domain.CompetitionRunStatus;
+import ru.joyhub.competition.persistence.CompetitionPlayerRepository;
+import ru.joyhub.competition.persistence.CompetitionRunEntity;
+import ru.joyhub.competition.persistence.CompetitionRunRepository;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -44,6 +51,9 @@ public class GameService {
     private final Clock clock;
     private final int maxOpenGames;
     private final Duration openGameWindow;
+    private final CompetitionPlayerRepository competitionPlayers;
+    private final CompetitionRunRepository competitionRuns;
+    private final CompetitionService competition;
 
     public GameService(
             GameRoundRepository games,
@@ -53,7 +63,10 @@ public class GameService {
             CommitmentService commitments,
             Clock clock,
             @Value("${joyhub.abuse.max-open-games:20}") int maxOpenGames,
-            @Value("${joyhub.abuse.open-game-window:PT24H}") Duration openGameWindow
+            @Value("${joyhub.abuse.open-game-window:PT24H}") Duration openGameWindow,
+            CompetitionPlayerRepository competitionPlayers,
+            CompetitionRunRepository competitionRuns,
+            CompetitionService competition
     ) {
         this.games = games;
         this.gameCreation = gameCreation;
@@ -63,13 +76,23 @@ public class GameService {
         this.clock = clock;
         this.maxOpenGames = maxOpenGames;
         this.openGameWindow = openGameWindow;
+        this.competitionPlayers = competitionPlayers;
+        this.competitionRuns = competitionRuns;
+        this.competition = competition;
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public Created create(UUID creationRequestId, Optional<UUID> requestVisitorId) {
+        return create(creationRequestId, requestVisitorId, Optional.empty());
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public Created create(
+            UUID creationRequestId, Optional<UUID> requestVisitorId, Optional<UUID> competitionPlayerId
+    ) {
         Optional<GameCreationRepository.CreationRecord> existing = gameCreation.find(creationRequestId);
         if (existing.isPresent()) {
-            return replay(existing.get(), requestVisitorId);
+            return replay(existing.get(), requestVisitorId, competitionPlayerId);
         }
 
         UUID visitorId = requestVisitorId.orElseGet(UUID::randomUUID);
@@ -98,6 +121,7 @@ public class GameService {
         );
 
         GameCreationRepository.CreationRecord stored = attempt.game();
+        authorizeCreationRecord(stored, competitionPlayerId);
         ensureVisitorMayReplay(stored, requestVisitorId);
         if (attempt.created()) {
             log.info("game_created gameId={}", stored.gameId());
@@ -109,7 +133,13 @@ public class GameService {
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public Choice choose(UUID gameId, UUID visitorId, int selectedBox) {
+        return choose(gameId, visitorId, selectedBox, Optional.empty());
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED, noRollbackFor = CompetitionException.class)
+    public Choice choose(UUID gameId, UUID visitorId, int selectedBox, Optional<UUID> competitionPlayerId) {
         MontyHallRules.validateBox(selectedBox);
+        CompetitionRunEntity run = lockCompetition(gameId, visitorId, competitionPlayerId);
         GameRoundEntity game = ownedGameForUpdate(gameId, visitorId);
 
         if (game.getState() == GameState.COMPLETED) {
@@ -122,6 +152,8 @@ public class GameService {
             throw new InvalidGameTransitionException("The initial choice has already been recorded");
         }
 
+        if (run != null) requireActiveBeforeDeadline(run, clock.instant());
+
         HostMove move = MontyHallRules.hostMove(game.getKeyBox(), selectedBox, random);
         game.recordChoice(selectedBox, move.openedBox(), clock.instant());
         log.info("game_choice_made gameId={} selectedBox={} openedBox={}", gameId, selectedBox, move.openedBox());
@@ -130,6 +162,12 @@ public class GameService {
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public Completed decide(UUID gameId, UUID visitorId, Strategy strategy) {
+        return decide(gameId, visitorId, strategy, Optional.empty());
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED, noRollbackFor = CompetitionException.class)
+    public Completed decide(UUID gameId, UUID visitorId, Strategy strategy, Optional<UUID> competitionPlayerId) {
+        CompetitionRunEntity run = lockCompetition(gameId, visitorId, competitionPlayerId);
         GameRoundEntity game = ownedGameForUpdate(gameId, visitorId);
 
         if (game.getState() == GameState.CREATED) {
@@ -137,10 +175,14 @@ public class GameService {
         }
         if (game.getState() == GameState.COMPLETED) {
             if (game.getStrategy() == strategy) {
-                return completedResult(game);
+                log.info("game_decision_replayed gameId={}", gameId);
+                return completedResult(game, run);
             }
             throw new InvalidGameTransitionException("The game has already been completed with another strategy");
         }
+
+        Instant acceptedAt = clock.instant();
+        if (run != null) requireActiveBeforeDeadline(run, acceptedAt);
 
         int finalChoice = MontyHallRules.finalChoice(
                 game.getInitialChoice(),
@@ -148,15 +190,31 @@ public class GameService {
                 strategy
         );
         boolean won = finalChoice == game.getKeyBox();
-        game.complete(strategy, finalChoice, won, clock.instant());
+        game.complete(strategy, finalChoice, won, acceptedAt);
+        if (run != null) {
+            if (won) {
+                run.recordWin(acceptedAt);
+                log.info("competition_score_confirmed runId={} gameId={} score={}", run.getId(), gameId, run.getScore());
+            } else {
+                run.recordLoss(acceptedAt);
+                log.info("competition_run_ended runId={} gameId={} status=LOST score={}", run.getId(), gameId, run.getScore());
+            }
+            games.flush();
+        }
         log.info("game_completed gameId={} strategy={} won={}", gameId, strategy, won);
-        return completedResult(game);
+        return completedResult(game, run);
     }
 
     @Transactional(readOnly = true)
     public GameSnapshot getState(UUID gameId, UUID visitorId) {
+        return getState(gameId, visitorId, Optional.empty());
+    }
+
+    @Transactional(readOnly = true)
+    public GameSnapshot getState(UUID gameId, UUID visitorId, Optional<UUID> competitionPlayerId) {
         GameRoundEntity game = games.findByIdAndVisitorId(gameId, visitorId)
                 .orElseThrow(() -> new GameNotFoundException(gameId));
+        authorizeCompetitionRead(game, competitionPlayerId);
 
         if (game.getState() == GameState.CREATED) {
             return new GameSnapshot(
@@ -203,11 +261,22 @@ public class GameService {
 
     private Created replay(
             GameCreationRepository.CreationRecord existing,
-            Optional<UUID> requestVisitorId
+            Optional<UUID> requestVisitorId,
+            Optional<UUID> competitionPlayerId
     ) {
+        authorizeCreationRecord(existing, competitionPlayerId);
         ensureVisitorMayReplay(existing, requestVisitorId);
         log.info("game_create_replayed gameId={}", existing.gameId());
         return createdResult(existing);
+    }
+
+    private static void authorizeCreationRecord(
+            GameCreationRepository.CreationRecord existing, Optional<UUID> competitionPlayerId
+    ) {
+        if (existing.competitionRunId() != null
+                && (competitionPlayerId.isEmpty() || !competitionPlayerId.get().equals(existing.competitionPlayerId()))) {
+            throw CompetitionException.notFound();
+        }
     }
 
     private static void ensureVisitorMayReplay(
@@ -232,7 +301,9 @@ public class GameService {
         return new Choice(game.getInitialChoice(), game.getOpenedBox(), switchTo);
     }
 
-    private static Completed completedResult(GameRoundEntity game) {
+    private Completed completedResult(GameRoundEntity game, CompetitionRunEntity run) {
+        CompetitionResults.Run competitionSnapshot = run == null
+                ? null : competition.currentRunSnapshot(run, clock.instant());
         return new Completed(
                 game.getId(),
                 game.getInitialChoice(),
@@ -242,8 +313,41 @@ public class GameService {
                 game.getKeyBox(),
                 Boolean.TRUE.equals(game.getWon()),
                 game.getNonce(),
-                game.getCommitment()
+                game.getCommitment(),
+                competitionSnapshot
         );
+    }
+
+    private CompetitionRunEntity lockCompetition(
+            UUID gameId, UUID visitorId, Optional<UUID> competitionPlayerId
+    ) {
+        GameRoundRepository.GameLockPreview preview = games.findLockPreview(gameId, visitorId)
+                .orElseThrow(() -> new GameNotFoundException(gameId));
+        if (preview.getCompetitionRunId() == null) return null;
+        UUID playerId = competitionPlayerId.orElseThrow(CompetitionException::notFound);
+        competitionPlayers.findForUpdate(playerId).orElseThrow(CompetitionException::notFound);
+        CompetitionRunEntity run = competitionRuns.findForUpdate(preview.getCompetitionRunId())
+                .filter(value -> value.getPlayerId().equals(playerId))
+                .orElseThrow(CompetitionException::notFound);
+        return run;
+    }
+
+    private void authorizeCompetitionRead(GameRoundEntity game, Optional<UUID> competitionPlayerId) {
+        if (game.getCompetitionRunId() == null) return;
+        UUID playerId = competitionPlayerId.orElseThrow(CompetitionException::notFound);
+        competitionRuns.findById(game.getCompetitionRunId())
+                .filter(run -> run.getPlayerId().equals(playerId))
+                .orElseThrow(CompetitionException::notFound);
+    }
+
+    private static void requireActiveBeforeDeadline(CompetitionRunEntity run, Instant acceptedAt) {
+        if (run.getStatus() != CompetitionRunStatus.ACTIVE) {
+            throw CompetitionException.conflict("Попытка уже завершена");
+        }
+        if (run.isExpiredAt(acceptedAt)) {
+            run.expire(acceptedAt);
+            throw CompetitionException.expired();
+        }
     }
 
     private static StrategyStats strategyStats(long games, long wins) {

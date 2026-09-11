@@ -22,6 +22,7 @@ export interface CompletedGame {
   won: boolean;
   nonce: string;
   commitment: string;
+  competition?: import("../competition/types").CompetitionRun;
 }
 
 export type GameStateResponse =

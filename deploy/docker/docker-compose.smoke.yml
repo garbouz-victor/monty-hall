@@ -18,10 +18,14 @@ services:
       context: ../../backend
       dockerfile: Dockerfile
     environment:
+      SPRING_PROFILES_ACTIVE: full-stack-test
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/joyhub_smoke
       POSTGRES_USER: joyhub
       POSTGRES_PASSWORD: joyhub-smoke-password
       VISITOR_COOKIE_SECURE: "false"
+      COMPETITION_COOKIE_NAME: "joyhub_competition_test"
+      COMPETITION_COOKIE_SECURE: "false"
+      JOYHUB_TEST_RANDOM_SEQUENCE: "0,0,1"
       DB_POOL_SIZE: "5"
     ports:
       - "127.0.0.1:18080:8080"

@@ -1,4 +1,34 @@
-import { defineConfig, devices } from "@playwright/test";
+import { defineConfig, devices, type Project } from "@playwright/test";
+
+const projects: Project[] = [
+  {
+    name: "mobile-chromium",
+    use: {
+      ...devices["Pixel 5"],
+      viewport: { width: 390, height: 844 },
+    },
+    grep: /@mobile/,
+  },
+  {
+    name: "desktop-chromium",
+    use: {
+      ...devices["Desktop Chrome"],
+      viewport: { width: 1440, height: 900 },
+    },
+    grep: /@desktop/,
+  },
+];
+
+if (process.env.PLAYWRIGHT_WEBKIT === "1") {
+  projects.push({
+    name: "webkit-smoke",
+    use: {
+      ...devices["Desktop Safari"],
+      viewport: { width: 1024, height: 768 },
+    },
+    grep: /@webkit/,
+  });
+}
 
 export default defineConfig({
   testDir: "./e2e",
@@ -15,23 +45,5 @@ export default defineConfig({
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },
-  projects: [
-    {
-      name: "mobile-chromium",
-      use: {
-        ...devices["Pixel 5"],
-        viewport: { width: 390, height: 844 },
-      },
-      grep: /@mobile/,
-    },
-    {
-      name: "desktop-chromium",
-      use: {
-        ...devices["Desktop Chrome"],
-        viewport: { width: 1440, height: 900 },
-      },
-      grep: /@desktop/,
-    },
-  ],
+  projects,
 });
-
