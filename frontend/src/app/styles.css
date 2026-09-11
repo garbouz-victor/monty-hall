@@ -703,6 +703,13 @@ p {
   padding: 3px 12px 15px;
 }
 
+.stats-method {
+  margin: 0 5px 8px;
+  color: #e1e2ee;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
 .total-games {
   margin: 0 5px 13px;
   color: #c6c8dd;
@@ -735,11 +742,39 @@ p {
 }
 
 .stats-card__rate {
-  margin: 0 0 9px;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin: 6px 0 3px;
+  color: #d9daea;
+  font-size: 0.82rem;
+  font-weight: 750;
+}
+
+.stats-card__rate strong {
   color: #fff;
-  font-size: 1.82rem;
+  font-size: 1.95rem;
   font-weight: 900;
   letter-spacing: -0.04em;
+}
+
+.stats-card__summary {
+  margin: 0 0 12px;
+  color: #f0f1f8;
+  font-size: 0.9rem;
+  font-weight: 750;
+  line-height: 1.35;
+}
+
+.stats-card__empty {
+  margin: 14px 0 17px;
+  color: #f0f1f8;
+  font-size: 1.05rem;
+  font-weight: 800;
+}
+
+.rate-visual {
+  margin-bottom: 2px;
 }
 
 .rate-bar {
@@ -776,6 +811,15 @@ p {
 .stats-card--stay .rate-bar::-webkit-progress-value,
 .stats-card--stay .rate-bar::-moz-progress-bar {
   background: linear-gradient(90deg, #1ba494, #4cd4c4);
+}
+
+.rate-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  color: #8589a8;
+  font-size: 0.61rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .stats-list {
@@ -822,6 +866,34 @@ p {
   line-height: 1.45;
 }
 
+.stats-insight {
+  display: flex;
+  gap: 8px;
+  margin: 12px 4px 0;
+  padding: 10px 11px;
+  border: 1px solid rgb(142 223 214 / 16%);
+  border-radius: 12px;
+  color: #c8cadc;
+  background: rgb(142 223 214 / 6%);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.stats-insight > span:first-child {
+  flex: 0 0 auto;
+  color: #8edfd6;
+}
+
+.stats-insight--sample {
+  margin-top: 7px;
+  border-color: rgb(178 169 255 / 18%);
+  background: rgb(110 97 237 / 7%);
+}
+
+.stats-insight--sample > span:first-child {
+  color: #b2a9ff;
+}
+
 .stats-state {
   margin: 0;
   padding: 15px 5px;
@@ -857,6 +929,17 @@ p {
   color: #aeb0c7;
   font-size: 0.82rem;
   line-height: 1.55;
+}
+
+.explanation .explanation__current {
+  padding: 9px 10px;
+  border-radius: 10px;
+  color: #cfd1e2;
+  background: rgb(255 255 255 / 5%);
+}
+
+.explanation__current strong {
+  color: #f2f3f9;
 }
 
 footer {

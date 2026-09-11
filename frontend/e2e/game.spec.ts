@@ -19,9 +19,9 @@ async function mockApi(page: Page) {
       body = { status: "UP", time: "2026-09-10T12:00:00Z" };
     } else if (path === "/api/v1/stats") {
       body = {
-        totalCompletedGames: 18_342,
-        switch: { games: 10_152, wins: 6_781, losses: 3_371, winRate: 0.6679 },
-        stay: { games: 8_190, wins: 2_719, losses: 5_471, winRate: 0.332 },
+        totalCompletedGames: 38,
+        switch: { games: 10, wins: 8, losses: 2, winRate: 0.8 },
+        stay: { games: 28, wins: 6, losses: 22, winRate: 6 / 28 },
         theoretical: { switchWinRate: 2 / 3, stayWinRate: 1 / 3 },
         updatedAt: "2026-09-10T12:00:00Z",
       };
@@ -67,9 +67,29 @@ test("@mobile new game → select → switch → verified win", async ({ page })
 
   await expect(page.getByText("🎉 Вы выиграли!", { exact: true })).toBeVisible();
   await expect(page.getByRole("status")).toContainText("Честность игры проверена");
-  await expect(page.getByText("66,8%", { exact: true })).toBeVisible();
+  await expect(page.getByText("80,0%", { exact: true })).toBeVisible();
+  await expect(page.getByText("8 побед из 10 игр", { exact: true })).toBeVisible();
+  await expect(page.getByText("21,4%", { exact: true })).toBeVisible();
+  await expect(page.getByText("6 побед из 28 игр", { exact: true })).toBeVisible();
+  await expect(page.getByText(/не обязаны складываться в 100%/)).toBeVisible();
+  await expect(page.getByText(/Пока игр немного, поэтому результаты могут заметно отличаться от теории/)).toBeVisible();
   await expect(page.locator(".key-symbol")).toHaveCSS("opacity", "1");
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+  for (const viewport of [
+    { width: 360, height: 640 },
+    { width: 390, height: 844 },
+    { width: 430, height: 932 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await expect(page.getByText("8 побед из 10 игр", { exact: true })).toBeVisible();
+    await expect(page.getByText("6 побед из 28 игр", { exact: true })).toBeVisible();
+    const layout = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(layout.scrollWidth, `stats overflow at ${viewport.width} × ${viewport.height}`)
+      .toBeLessThanOrEqual(layout.clientWidth);
+  }
 });
 
 test("@mobile stays usable at 360 × 640", async ({ page }) => {
