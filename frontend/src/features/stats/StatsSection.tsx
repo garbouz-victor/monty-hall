@@ -28,18 +28,17 @@ function StrategyCard({
   theory: number;
   accent: "switch" | "stay";
 }) {
-  const width = `${Math.max(0, Math.min(stats.winRate * 100, 100))}%`;
+  const winRate = Math.max(0, Math.min(stats.winRate, 1));
   return (
     <article className={`stats-card stats-card--${accent}`}>
       <p className="stats-card__label">{title}</p>
       <p className="stats-card__rate">{percent(stats.winRate)}</p>
-      <div
+      <progress
         className="rate-bar"
-        role="img"
         aria-label={`${title}: ${percent(stats.winRate)} побед`}
-      >
-        <span style={{ width }} />
-      </div>
+        max={1}
+        value={winRate}
+      />
       <dl className="stats-list">
         <div><dt>Игры</dt><dd>{numberFormat.format(stats.games)}</dd></div>
         <div><dt>Победы</dt><dd>{numberFormat.format(stats.wins)}</dd></div>

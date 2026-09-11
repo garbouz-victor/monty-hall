@@ -4,7 +4,7 @@ import { StatsSection } from "../features/stats/StatsSection";
 
 export function App() {
   const { state, selectBox, decide, retry, startNewGame, refreshStats } = useMontyHallGame();
-  const loading = state.phase === "booting" || state.phase === "starting";
+  const loading = state.phase === "booting";
 
   return (
     <div className="site-shell">
@@ -20,8 +20,8 @@ export function App() {
         {loading ? (
           <section className="status-card" aria-live="polite" aria-busy="true">
             <span className="loader" aria-hidden="true" />
-            <h1>Готовим новую партию</h1>
-            <p>Сервер прячет ключи и фиксирует честный результат.</p>
+            <h1>Проверяем игровой сервер</h1>
+            <p>Загружаем состояние сервиса и общую статистику.</p>
           </section>
         ) : null}
 
@@ -58,4 +58,3 @@ export function App() {
     </div>
   );
 }
-

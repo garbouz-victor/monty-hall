@@ -24,6 +24,16 @@ export interface CompletedGame {
   commitment: string;
 }
 
+export type GameStateResponse =
+  | (CreatedGame & { state: "CREATED" })
+  | (CreatedGame & {
+      state: "CHOICE_MADE";
+      initialChoice: BoxNumber;
+      openedBox: BoxNumber;
+      switchToBox: BoxNumber;
+    })
+  | (CompletedGame & { state: "COMPLETED" });
+
 export interface StrategyStats {
   games: number;
   wins: number;
@@ -41,4 +51,3 @@ export interface PublicStats {
   };
   updatedAt: string;
 }
-

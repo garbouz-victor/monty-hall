@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: joyhub_smoke
+      POSTGRES_USER: joyhub
+      POSTGRES_PASSWORD: joyhub-smoke-password
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U joyhub -d joyhub_smoke"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  backend:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/joyhub_smoke
+      POSTGRES_USER: joyhub
+      POSTGRES_PASSWORD: joyhub-smoke-password
+      VISITOR_COOKIE_SECURE: "false"
+      DB_POOL_SIZE: "5"
+    ports:
+      - "127.0.0.1:18080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/api/v1/health"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+      start_period: 120s

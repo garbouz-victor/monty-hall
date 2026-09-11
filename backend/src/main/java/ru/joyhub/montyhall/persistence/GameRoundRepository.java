@@ -17,6 +17,7 @@ public interface GameRoundRepository extends JpaRepository<GameRoundEntity, UUID
     @Query("select game from GameRoundEntity game where game.id = :id and game.visitorId = :visitorId")
     Optional<GameRoundEntity> findOwnedForUpdate(@Param("id") UUID id, @Param("visitorId") UUID visitorId);
 
+    Optional<GameRoundEntity> findByIdAndVisitorId(UUID id, UUID visitorId);
+
     long countByVisitorIdAndStateNotAndCreatedAtAfter(UUID visitorId, GameState state, Instant createdAfter);
 }
-

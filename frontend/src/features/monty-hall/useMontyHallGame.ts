@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ApiError,
   checkHealth,
   createGame,
+  getGameState,
   getStats,
   makeChoice,
   makeDecision,
@@ -12,35 +14,45 @@ import type {
   ChoiceResult,
   CompletedGame,
   CreatedGame,
+  GameStateResponse,
   PublicStats,
   Strategy,
 } from "./types";
 
 export type GamePhase =
   | "booting"
-  | "starting"
   | "ready"
+  | "starting"
+  | "start-failed"
   | "choosing"
   | "choice-made"
   | "deciding"
+  | "recovering-choice"
+  | "recovering-decision"
+  | "recovery-blocked"
   | "completed"
+  | "game-missing"
   | "unavailable";
 
-type RetryAction =
+export type PendingMutation =
   | { type: "choice"; box: BoxNumber }
   | { type: "decision"; strategy: Strategy }
-  | { type: "start" };
+  | null;
+
+type RetryAction = "boot" | "repeat-pending" | "recover" | "reset" | null;
 
 export interface MontyHallGameState {
   phase: GamePhase;
   game: CreatedGame | null;
   choice: ChoiceResult | null;
   result: CompletedGame | null;
+  pendingMutation: PendingMutation;
   fairness: FairnessStatus | null;
   stats: PublicStats | null;
   statsLoading: boolean;
   error: string | null;
-  retryAction: RetryAction | null;
+  retryAction: RetryAction;
+  retryLabel: string | null;
 }
 
 const initialState: MontyHallGameState = {
@@ -48,15 +60,54 @@ const initialState: MontyHallGameState = {
   game: null,
   choice: null,
   result: null,
+  pendingMutation: null,
   fairness: null,
   stats: null,
   statsLoading: true,
   error: null,
   retryAction: null,
+  retryLabel: null,
 };
+
+function choiceFromSnapshot(snapshot: Extract<GameStateResponse, { state: "CHOICE_MADE" }>): ChoiceResult {
+  return {
+    selectedBox: snapshot.initialChoice,
+    openedBox: snapshot.openedBox,
+    switchToBox: snapshot.switchToBox,
+  };
+}
+
+function resultFromSnapshot(snapshot: Extract<GameStateResponse, { state: "COMPLETED" }>): CompletedGame {
+  return {
+    gameId: snapshot.gameId,
+    initialChoice: snapshot.initialChoice,
+    openedBox: snapshot.openedBox,
+    finalChoice: snapshot.finalChoice,
+    strategy: snapshot.strategy,
+    keyBox: snapshot.keyBox,
+    won: snapshot.won,
+    nonce: snapshot.nonce,
+    commitment: snapshot.commitment,
+  };
+}
+
+function shouldRecover(error: unknown): boolean {
+  return error instanceof ApiError
+    && ["NETWORK", "TIMEOUT", "CONFLICT", "SERVER"].includes(error.kind);
+}
+
+function pendingActionLabel(pending: Exclude<PendingMutation, null>): string {
+  return pending.type === "choice"
+    ? `Повторить выбор ящика №${pending.box}`
+    : pending.strategy === "SWITCH"
+      ? "Повторить смену выбора"
+      : "Повторить прежний выбор";
+}
 
 export function useMontyHallGame() {
   const [state, setState] = useState(initialState);
+  const mutationInFlight = useRef(false);
+  const recoveryInFlight = useRef(false);
 
   const refreshStats = useCallback(async () => {
     setState((current) => ({ ...current, statsLoading: true }));
@@ -68,125 +119,320 @@ export function useMontyHallGame() {
     }
   }, []);
 
-  const startNewGame = useCallback(async (checkServer = false) => {
+  const boot = useCallback(async () => {
     setState((current) => ({
       ...current,
-      phase: current.phase === "booting" ? "booting" : "starting",
+      phase: "booting",
+      error: null,
+      retryAction: null,
+      retryLabel: null,
+      statsLoading: true,
+    }));
+
+    const [health, stats] = await Promise.allSettled([checkHealth(), getStats()]);
+    setState((current) => ({
+      ...current,
+      phase: health.status === "fulfilled" ? "ready" : "unavailable",
       game: null,
       choice: null,
       result: null,
+      pendingMutation: null,
       fairness: null,
-      error: null,
-      retryAction: null,
+      stats: stats.status === "fulfilled" ? stats.value : current.stats,
+      statsLoading: false,
+      error: health.status === "fulfilled" ? null : "Игровой сервер сейчас временно недоступен.",
+      retryAction: health.status === "fulfilled" ? null : "boot",
+      retryLabel: health.status === "fulfilled" ? null : "Попробовать снова",
     }));
-
-    try {
-      if (checkServer) {
-        await checkHealth();
-      }
-      const game = await createGame();
-      setState((current) => ({ ...current, game, phase: "ready" }));
-    } catch {
-      setState((current) => ({
-        ...current,
-        phase: "unavailable",
-        error: "Игровой сервер сейчас временно недоступен.",
-        retryAction: { type: "start" },
-      }));
-    }
   }, []);
 
   useEffect(() => {
-    let active = true;
-
-    async function boot() {
-      try {
-        await checkHealth();
-        if (!active) return;
-        const [game, stats] = await Promise.all([
-          createGame(),
-          getStats().catch(() => null),
-        ]);
-        if (!active) return;
-        setState((current) => ({
-          ...current,
-          phase: "ready",
-          game,
-          stats,
-          statsLoading: false,
-        }));
-      } catch {
-        if (!active) return;
-        setState((current) => ({
-          ...current,
-          phase: "unavailable",
-          statsLoading: false,
-          error: "Игровой сервер сейчас временно недоступен.",
-          retryAction: { type: "start" },
-        }));
-      }
-    }
-
     void boot();
-    return () => {
-      active = false;
-    };
+  }, [boot]);
+
+  const showCompleted = useCallback((game: CreatedGame, result: CompletedGame) => {
+    setState((current) => ({
+      ...current,
+      phase: "completed",
+      result,
+      pendingMutation: null,
+      fairness: "checking",
+      error: null,
+      retryAction: null,
+      retryLabel: null,
+    }));
+
+    void verifyCommitment(result, game).then((fairness) => {
+      setState((current) => current.result?.gameId === result.gameId
+        ? { ...current, fairness }
+        : current);
+    });
+    void refreshStats();
+  }, [refreshStats]);
+
+  const markGameMissing = useCallback(() => {
+    setState((current) => ({
+      ...current,
+      phase: "game-missing",
+      pendingMutation: null,
+      error: "Эту партию не удалось восстановить. Начните новую игру.",
+      retryAction: "reset",
+      retryLabel: "Начать заново",
+    }));
   }, []);
 
-  const selectBox = useCallback(async (box: BoxNumber) => {
-    if (!state.game || (state.phase !== "ready" && state.phase !== "choosing")) return;
-    setState((current) => ({ ...current, phase: "choosing", error: null, retryAction: null }));
-    try {
-      const choice = await makeChoice(state.game.gameId, box);
-      setState((current) => ({ ...current, phase: "choice-made", choice }));
-    } catch {
-      setState((current) => ({
-        ...current,
-        phase: "ready",
-        error: "Не удалось сохранить выбор. Проверьте соединение и повторите.",
-        retryAction: { type: "choice", box },
-      }));
-    }
-  }, [state.game, state.phase]);
+  const recover = useCallback(async (game: CreatedGame, pending: Exclude<PendingMutation, null>) => {
+    if (recoveryInFlight.current) return;
+    recoveryInFlight.current = true;
+    setState((current) => ({
+      ...current,
+      phase: pending.type === "choice" ? "recovering-choice" : "recovering-decision",
+      error: null,
+      retryAction: null,
+      retryLabel: null,
+    }));
 
-  const decide = useCallback(async (strategy: Strategy) => {
-    if (!state.game || !state.choice || (state.phase !== "choice-made" && state.phase !== "deciding")) return;
-    setState((current) => ({ ...current, phase: "deciding", error: null, retryAction: null }));
     try {
-      const result = await makeDecision(state.game.gameId, strategy);
+      const snapshot = await getGameState(game.gameId);
+      if (snapshot.gameId !== game.gameId || snapshot.commitment.toLowerCase() !== game.commitment.toLowerCase()) {
+        markGameMissing();
+        return;
+      }
+
+      if (snapshot.state === "COMPLETED") {
+        showCompleted(game, resultFromSnapshot(snapshot));
+        return;
+      }
+
+      if (snapshot.state === "CHOICE_MADE" && pending.type === "choice") {
+        if (snapshot.initialChoice !== pending.box) {
+          markGameMissing();
+          return;
+        }
+        setState((current) => ({
+          ...current,
+          phase: "choice-made",
+          choice: choiceFromSnapshot(snapshot),
+          pendingMutation: null,
+          error: null,
+          retryAction: null,
+          retryLabel: null,
+        }));
+        return;
+      }
+
       setState((current) => ({
         ...current,
-        phase: "completed",
-        result,
-        fairness: "checking",
+        phase: "recovery-blocked",
+        pendingMutation: pending,
+        error: "Сервер ещё не подтвердил сохранение хода. Можно безопасно повторить только прежнее действие.",
+        retryAction: "repeat-pending",
+        retryLabel: pendingActionLabel(pending),
       }));
-      const fairness = await verifyCommitment(result, state.game);
-      setState((current) => ({ ...current, fairness }));
-      void refreshStats();
-    } catch {
+    } catch (error) {
+      if (error instanceof ApiError && error.kind === "NOT_FOUND") {
+        markGameMissing();
+        return;
+      }
+      setState((current) => ({
+        ...current,
+        phase: "recovery-blocked",
+        pendingMutation: pending,
+        error: "Не удалось проверить, был ли ваш ход сохранён.",
+        retryAction: "recover",
+        retryLabel: "Повторить проверку",
+      }));
+    } finally {
+      recoveryInFlight.current = false;
+    }
+  }, [markGameMissing, showCompleted]);
+
+  const handleMutationFailure = useCallback(async (
+    error: unknown,
+    game: CreatedGame,
+    pending: Exclude<PendingMutation, null>,
+  ) => {
+    if (shouldRecover(error)) {
+      await recover(game, pending);
+      return;
+    }
+    if (error instanceof ApiError && error.kind === "NOT_FOUND") {
+      markGameMissing();
+      return;
+    }
+
+    const rateLimited = error instanceof ApiError && error.kind === "RATE_LIMIT";
+    setState((current) => ({
+      ...current,
+      phase: "recovery-blocked",
+      pendingMutation: pending,
+      error: rateLimited
+        ? "Слишком много запросов. Подождите немного и повторите прежний ход."
+        : "Ход не принят. Можно безопасно повторить только прежнее действие.",
+      retryAction: "repeat-pending",
+      retryLabel: pendingActionLabel(pending),
+    }));
+  }, [markGameMissing, recover]);
+
+  const performChoice = useCallback(async (
+    game: CreatedGame,
+    pending: Extract<Exclude<PendingMutation, null>, { type: "choice" }>,
+  ) => {
+    setState((current) => ({
+      ...current,
+      game,
+      phase: "choosing",
+      pendingMutation: pending,
+      error: null,
+      retryAction: null,
+      retryLabel: null,
+    }));
+    try {
+      const choice = await makeChoice(game.gameId, pending.box);
       setState((current) => ({
         ...current,
         phase: "choice-made",
-        error: "Не удалось завершить партию. Повторите решение.",
-        retryAction: { type: "decision", strategy },
+        choice,
+        pendingMutation: null,
       }));
+    } catch (error) {
+      await handleMutationFailure(error, game, pending);
     }
-  }, [refreshStats, state.choice, state.game, state.phase]);
+  }, [handleMutationFailure]);
 
-  const retry = useCallback(() => {
-    const action = state.retryAction;
-    if (!action) return;
-    if (action.type === "choice") void selectBox(action.box);
-    if (action.type === "decision") void decide(action.strategy);
-    if (action.type === "start") void startNewGame(true);
-  }, [decide, selectBox, startNewGame, state.retryAction]);
+  const performDecision = useCallback(async (
+    game: CreatedGame,
+    pending: Extract<Exclude<PendingMutation, null>, { type: "decision" }>,
+  ) => {
+    setState((current) => ({
+      ...current,
+      phase: "deciding",
+      pendingMutation: pending,
+      error: null,
+      retryAction: null,
+      retryLabel: null,
+    }));
+    try {
+      const result = await makeDecision(game.gameId, pending.strategy);
+      showCompleted(game, result);
+    } catch (error) {
+      await handleMutationFailure(error, game, pending);
+    }
+  }, [handleMutationFailure, showCompleted]);
+
+  const selectBox = useCallback(async (box: BoxNumber) => {
+    if (state.phase !== "ready" || mutationInFlight.current) return;
+    mutationInFlight.current = true;
+    const pending = { type: "choice", box } as const;
+    setState((current) => ({
+      ...current,
+      phase: "starting",
+      pendingMutation: pending,
+      error: null,
+      retryAction: null,
+      retryLabel: null,
+    }));
+
+    try {
+      const game = await createGame();
+      await performChoice(game, pending);
+    } catch (error) {
+      const rateLimited = error instanceof ApiError && error.kind === "RATE_LIMIT";
+      setState((current) => ({
+        ...current,
+        phase: "start-failed",
+        game: null,
+        pendingMutation: pending,
+        error: rateLimited
+          ? "Слишком много начатых партий. Завершите текущие партии или попробуйте позже."
+          : "Не удалось начать игру. Ваш выбор сохранён в браузере.",
+        retryAction: "repeat-pending",
+        retryLabel: `Повторить выбор ящика №${box}`,
+      }));
+    } finally {
+      mutationInFlight.current = false;
+    }
+  }, [performChoice, state.phase]);
+
+  const decide = useCallback(async (strategy: Strategy) => {
+    if (state.phase !== "choice-made" || !state.game || !state.choice || mutationInFlight.current) return;
+    mutationInFlight.current = true;
+    try {
+      await performDecision(state.game, { type: "decision", strategy });
+    } finally {
+      mutationInFlight.current = false;
+    }
+  }, [performDecision, state.choice, state.game, state.phase]);
+
+  const resetRound = useCallback(() => {
+    mutationInFlight.current = false;
+    recoveryInFlight.current = false;
+    setState((current) => ({
+      ...current,
+      phase: "ready",
+      game: null,
+      choice: null,
+      result: null,
+      pendingMutation: null,
+      fairness: null,
+      error: null,
+      retryAction: null,
+      retryLabel: null,
+    }));
+  }, []);
+
+  const retry = useCallback(async () => {
+    if (mutationInFlight.current || recoveryInFlight.current) return;
+    if (state.retryAction === "boot") {
+      await boot();
+      return;
+    }
+    if (state.retryAction === "reset") {
+      resetRound();
+      return;
+    }
+    if (!state.pendingMutation) return;
+
+    if (state.retryAction === "recover" && state.game) {
+      await recover(state.game, state.pendingMutation);
+      return;
+    }
+
+    if (state.retryAction !== "repeat-pending") return;
+    mutationInFlight.current = true;
+    try {
+      if (state.pendingMutation.type === "choice") {
+        if (state.game) {
+          await performChoice(state.game, state.pendingMutation);
+        } else {
+          const game = await createGame();
+          await performChoice(game, state.pendingMutation);
+        }
+      } else if (state.game) {
+        await performDecision(state.game, state.pendingMutation);
+      }
+    } catch (error) {
+      const pending = state.pendingMutation;
+      setState((current) => ({
+        ...current,
+        phase: "start-failed",
+        error: error instanceof ApiError && error.kind === "RATE_LIMIT"
+          ? "Слишком много начатых партий. Попробуйте позже."
+          : "Не удалось начать игру. Ваш выбор сохранён в браузере.",
+        retryAction: "repeat-pending",
+        retryLabel: pendingActionLabel(pending),
+      }));
+    } finally {
+      mutationInFlight.current = false;
+    }
+  }, [boot, performChoice, performDecision, recover, resetRound, state.game, state.pendingMutation, state.retryAction]);
 
   return {
     state,
     selectBox,
     decide,
     retry,
-    startNewGame: () => startNewGame(true),
+    startNewGame: resetRound,
     refreshStats,
   };
 }

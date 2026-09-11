@@ -32,7 +32,13 @@ function stepLabel(state: MontyHallGameState): string {
 }
 
 export function GameBoard({ state, onSelectBox, onDecide, onRetry, onNewGame }: GameBoardProps) {
-  const isBusy = state.phase === "choosing" || state.phase === "deciding" || state.phase === "starting";
+  const isBusy = [
+    "starting",
+    "choosing",
+    "deciding",
+    "recovering-choice",
+    "recovering-decision",
+  ].includes(state.phase);
 
   return (
     <section className="game-card" aria-labelledby="game-title">
@@ -70,9 +76,15 @@ export function GameBoard({ state, onSelectBox, onDecide, onRetry, onNewGame }: 
       </div>
 
       <div className="game-response" aria-live="polite" aria-busy={isBusy}>
-        {state.phase === "ready" || state.phase === "choosing" ? (
+        {["ready", "starting", "choosing", "recovering-choice", "recovering-decision"].includes(state.phase) ? (
           <p className="game-prompt">
-            {state.phase === "choosing" ? "Ведущий открывает пустой ящик…" : "Нажмите на ящик — выбор сразу сохранится."}
+            {state.phase === "ready"
+              ? "Нажмите на ящик — выбор сразу сохранится."
+              : state.phase === "starting"
+                ? "Начинаем игру и фиксируем честный результат…"
+                : state.phase === "choosing"
+                  ? "Ведущий открывает пустой ящик…"
+                  : "Проверяем сохранённый ход…"}
           </p>
         ) : null}
 
@@ -82,25 +94,25 @@ export function GameBoard({ state, onSelectBox, onDecide, onRetry, onNewGame }: 
               В ящике №{state.choice.openedBox} ключей нет. Вы выбрали №{state.choice.selectedBox}.
               <strong> Поменять его на №{state.choice.switchToBox}?</strong>
             </p>
-            <div className="decision-actions">
-              <button
-                className="button button--primary"
-                type="button"
-                disabled={isBusy}
-                onClick={() => onDecide("SWITCH")}
-              >
-                <span aria-hidden="true">↻</span>
-                Поменять на ящик №{state.choice.switchToBox}
-              </button>
-              <button
-                className="button button--secondary"
-                type="button"
-                disabled={isBusy}
-                onClick={() => onDecide("STAY")}
-              >
-                Оставить ящик №{state.choice.selectedBox}
-              </button>
-            </div>
+            {state.phase === "choice-made" ? (
+              <div className="decision-actions">
+                <button
+                  className="button button--primary"
+                  type="button"
+                  onClick={() => onDecide("SWITCH")}
+                >
+                  <span aria-hidden="true">↻</span>
+                  Поменять на ящик №{state.choice.switchToBox}
+                </button>
+                <button
+                  className="button button--secondary"
+                  type="button"
+                  onClick={() => onDecide("STAY")}
+                >
+                  Оставить ящик №{state.choice.selectedBox}
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -124,7 +136,9 @@ export function GameBoard({ state, onSelectBox, onDecide, onRetry, onNewGame }: 
           <div className="inline-error" role="alert">
             <p>{state.error}</p>
             {state.retryAction ? (
-              <button className="text-button" type="button" onClick={onRetry}>Повторить запрос</button>
+              <button className="text-button" type="button" onClick={onRetry}>
+                {state.retryLabel ?? "Повторить запрос"}
+              </button>
             ) : null}
           </div>
         ) : null}
@@ -132,4 +146,3 @@ export function GameBoard({ state, onSelectBox, onDecide, onRetry, onNewGame }: 
     </section>
   );
 }
-

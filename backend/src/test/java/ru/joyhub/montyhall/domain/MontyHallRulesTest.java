@@ -7,6 +7,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 import java.util.SplittableRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 class MontyHallRulesTest {
 
@@ -62,6 +63,13 @@ class MontyHallRulesTest {
     }
 
     @Test
+    void finalChoiceRejectsNullStrategy() {
+        assertThatNullPointerException()
+                .isThrownBy(() -> MontyHallRules.finalChoice(1, 2, null))
+                .withMessage("strategy");
+    }
+
+    @Test
     void monteCarloConvergesToTheoreticalProbabilities() {
         SplittableRandom random = new SplittableRandom(8_675_309L);
         int simulations = 250_000;
@@ -87,4 +95,3 @@ class MontyHallRulesTest {
         return org.assertj.core.data.Offset.offset(tolerance);
     }
 }
-

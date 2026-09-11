@@ -8,6 +8,7 @@ const commitment = createHash("sha256")
   .digest("hex");
 
 async function mockApi(page: Page) {
+  const calls = { creates: 0 };
   await page.route("**/api/v1/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -25,6 +26,7 @@ async function mockApi(page: Page) {
         updatedAt: "2026-09-10T12:00:00Z",
       };
     } else if (path === "/api/v1/games") {
+      calls.creates += 1;
       status = 201;
       body = { gameId, commitment };
     } else if (path.endsWith("/choice")) {
@@ -49,13 +51,17 @@ async function mockApi(page: Page) {
 
     await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
   });
+  return calls;
 }
 
 test("@mobile new game → select → switch → verified win", async ({ page }) => {
-  await mockApi(page);
+  const calls = await mockApi(page);
   await page.goto("/");
 
+  await expect(page.getByRole("button", { name: "Выбрать ящик 3" })).toBeVisible();
+  expect(calls.creates).toBe(0);
   await page.getByRole("button", { name: "Выбрать ящик 3" }).click();
+  await expect.poll(() => calls.creates).toBe(1);
   await expect(page.getByRole("button", { name: "Ящик 1: пусто" })).toBeVisible();
   await page.getByRole("button", { name: "Поменять на ящик №2" }).click();
 

@@ -5,6 +5,7 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import ru.joyhub.montyhall.application.GameResults;
+import ru.joyhub.montyhall.domain.GameState;
 import ru.joyhub.montyhall.domain.Strategy;
 
 import java.time.Instant;
@@ -59,6 +60,29 @@ public final class GameApiModels {
         }
     }
 
+    public record GameStateResponse(
+            UUID gameId,
+            GameState state,
+            String commitment,
+            Integer initialChoice,
+            Integer openedBox,
+            Integer switchToBox,
+            Integer finalChoice,
+            Strategy strategy,
+            Integer keyBox,
+            Boolean won,
+            String nonce
+    ) {
+        static GameStateResponse from(GameResults.GameSnapshot snapshot) {
+            return new GameStateResponse(
+                    snapshot.gameId(), snapshot.state(), snapshot.commitment(),
+                    snapshot.initialChoice(), snapshot.openedBox(), snapshot.switchToBox(),
+                    snapshot.finalChoice(), snapshot.strategy(), snapshot.keyBox(),
+                    snapshot.won(), snapshot.nonce()
+            );
+        }
+    }
+
     public record StrategyStatsResponse(long games, long wins, long losses, double winRate) {
         static StrategyStatsResponse from(GameResults.StrategyStats stats) {
             return new StrategyStatsResponse(stats.games(), stats.wins(), stats.losses(), stats.winRate());
@@ -89,4 +113,3 @@ public final class GameApiModels {
         }
     }
 }
-

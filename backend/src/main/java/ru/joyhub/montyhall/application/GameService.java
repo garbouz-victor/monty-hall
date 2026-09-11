@@ -22,6 +22,7 @@ import java.util.UUID;
 import static ru.joyhub.montyhall.application.GameResults.Choice;
 import static ru.joyhub.montyhall.application.GameResults.Completed;
 import static ru.joyhub.montyhall.application.GameResults.Created;
+import static ru.joyhub.montyhall.application.GameResults.GameSnapshot;
 import static ru.joyhub.montyhall.application.GameResults.Stats;
 import static ru.joyhub.montyhall.application.GameResults.StrategyStats;
 import static ru.joyhub.montyhall.application.GameResults.Theoretical;
@@ -127,6 +128,37 @@ public class GameService {
     }
 
     @Transactional(readOnly = true)
+    public GameSnapshot getState(UUID gameId, UUID visitorId) {
+        GameRoundEntity game = games.findByIdAndVisitorId(gameId, visitorId)
+                .orElseThrow(() -> new GameNotFoundException(gameId));
+
+        if (game.getState() == GameState.CREATED) {
+            return new GameSnapshot(
+                    game.getId(), game.getState(), game.getCommitment(),
+                    null, null, null, null, null, null, null, null
+            );
+        }
+
+        if (game.getState() == GameState.CHOICE_MADE) {
+            int switchToBox = MontyHallRules.finalChoice(
+                    game.getInitialChoice(), game.getOpenedBox(), Strategy.SWITCH
+            );
+            return new GameSnapshot(
+                    game.getId(), game.getState(), game.getCommitment(),
+                    game.getInitialChoice(), game.getOpenedBox(), switchToBox,
+                    null, null, null, null, null
+            );
+        }
+
+        return new GameSnapshot(
+                game.getId(), game.getState(), game.getCommitment(),
+                game.getInitialChoice(), game.getOpenedBox(), null,
+                game.getFinalChoice(), game.getStrategy(), game.getKeyBox(),
+                game.getWon(), game.getNonce()
+        );
+    }
+
+    @Transactional(readOnly = true)
     public Stats getStats() {
         StatsQueryRepository.StatsRow row = stats.load();
         return new Stats(
@@ -175,4 +207,3 @@ public class GameService {
         );
     }
 }
-

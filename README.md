@@ -14,7 +14,7 @@ VPS: Nginx :443
                            │ WireGuard 10.88.88.0/24
                            ▼
                     Локальный компьютер
-                      ├── Spring Boot 3 / Java 21
+                      ├── Spring Boot 4.1.1 / Java 21
                       └── PostgreSQL 16 (только Docker network)
 ```
 
@@ -53,11 +53,16 @@ CREATED → CHOICE_MADE → COMPLETED
 
 Операции `choice` и `decision` блокируют строку `SELECT ... FOR UPDATE`. Повтор того же `choice` или того же финального `decision` возвращает уже сохранённый ответ. Изменить выбранный ящик, стратегию или завершённую партию нельзя. Поэтому повтор запроса после потери сетевого ответа не увеличивает статистику дважды.
 
+При обычной загрузке frontend делает только `GET /health` и `GET /stats`. Серверная партия создаётся лениво после первого нажатия на ящик: frontend сохраняет выбранный номер, последовательно отправляет `POST /games`, а затем отдельный `POST /games/{id}/choice`. Кнопка «Сыграть ещё раз» только возвращает UI к трём закрытым ящикам. Это не расходует лимит незавершённых партий до следующего реального выбора.
+
+Frontend хранит отправленное, но ещё не подтверждённое действие как `pendingMutation`. После timeout, сетевой ошибки, HTTP 409 или ошибки сервера он запрашивает фактическое состояние через `GET /games/{id}`. Пока исход не установлен, выбрать другой ящик или другую стратегию невозможно: пользователь может повторить проверку либо только то же действие. HTTP 404 предлагает начать новую партию. GET состояния выполняется как read-only операция без pessimistic write lock; mutation endpoints продолжают сериализоваться блокировкой строки.
+
 Все endpoint находятся под `/api/v1`:
 
 | Method | Path | Назначение |
 |---|---|---|
 | `POST` | `/api/v1/games` | Создать партию; ответ содержит только `gameId` и `commitment` |
+| `GET` | `/api/v1/games/{id}` | Восстановить разрешённую для состояния часть партии; чужая партия выглядит как `404` |
 | `POST` | `/api/v1/games/{id}/choice` | Передать `{ "box": 1..3 }`, получить открытый и второй закрытый ящики |
 | `POST` | `/api/v1/games/{id}/decision` | Передать `{ "strategy": "SWITCH" }` или `STAY`, получить результат и reveal |
 | `GET` | `/api/v1/stats` | Агрегаты завершённых партий по каждой стратегии |
@@ -79,16 +84,31 @@ curl -sS -b /tmp/joyhub-cookie \
 
 Ошибки возвращаются в формате `application/problem+json` с коротким `code`; stack trace клиенту не отдаётся. UUID visitor хранится год в `HttpOnly; Secure; SameSite=Lax` cookie. Имя, email, телефон и fingerprint не собираются. Партия доступна только visitor, который её создал.
 
+Контракт recovery endpoint зависит от состояния:
+
+```json
+{ "gameId": "...", "state": "CREATED", "commitment": "..." }
+```
+
+```json
+{
+  "gameId": "...", "state": "CHOICE_MADE", "commitment": "...",
+  "initialChoice": 3, "openedBox": 1, "switchToBox": 2
+}
+```
+
+Для `COMPLETED` также возвращаются `finalChoice`, `strategy`, `keyBox`, `won` и `nonce`. Поля с секретами отсутствуют в JSON для `CREATED` и `CHOICE_MADE`; JPA entity напрямую в API не сериализуется.
+
 ## Проверяемая честность
 
-При создании сервер выбирает `keyBox` криптографическим `SecureRandom`, генерирует 32-байтный случайный `nonce` и считает:
+После первого нажатия, но до отправки выбранного номера, frontend отдельным запросом создаёт игру. В этот момент сервер выбирает `keyBox` криптографическим `SecureRandom`, генерирует 32-байтный случайный `nonce` и считает:
 
 ```text
 canonical = v1:{gameId}:{keyBox}:{nonce}
 commitment = lowercaseHex(SHA-256(UTF-8(canonical)))
 ```
 
-До `decision` наружу выходит только commitment. После завершения API раскрывает `keyBox` и hex-encoded nonce. Frontend заново считает SHA-256 через Web Crypto API и показывает результат проверки. `nonce` и `keyBox` незавершённой игры не попадают в application logs.
+Запись `CREATED` с ключами, nonce и commitment уже сохранена до `POST /choice`, поэтому первый выбор не может повлиять на расположение ключей. До `decision` наружу выходит только commitment. После завершения API раскрывает `keyBox` и hex-encoded nonce. Frontend заново считает SHA-256 через Web Crypto API и показывает результат проверки. `nonce` и `keyBox` незавершённой игры не попадают в application logs.
 
 ## Схема PostgreSQL
 
@@ -173,7 +193,14 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-Backend integration tests отдельно покрывают реальный REST → transaction → PostgreSQL flow. CI-конфигурация находится в [.github/workflows/ci.yml](.github/workflows/ci.yml).
+Отдельный smoke-тест поднимает настоящий PostgreSQL и Spring Boot через Docker Compose, запускает Vite preview и проходит один flow в Chromium без API mocks:
+
+```bash
+cd frontend
+npm run test:e2e:full
+```
+
+Он проверяет отсутствие `POST /games` до первого выбора, порядок `POST /games` → `POST /choice`, сокрытие секрета, восстановимый `CHOICE_MADE`, SWITCH, Web Crypto verification и прирост статистики на одну завершённую партию. Backend integration tests отдельно покрывают REST → transaction → PostgreSQL, ownership, DTO-поля по состояниям и concurrent idempotent decision. CI-конфигурация находится в [.github/workflows/ci.yml](.github/workflows/ci.yml) и запускает backend verify, component tests, build, оба Playwright-набора, Compose validation и Nginx checks.
 
 ## Mobile-first интерфейс
 
@@ -271,9 +298,11 @@ sudo certbot certonly --webroot -w /var/www/joy-hub \
   -d joy-hub.ru -d www.joy-hub.ru
 ```
 
-6. Замените bootstrap полным [joy-hub.conf](deploy/nginx/joy-hub.conf), установите короткую ротацию access logs и перечитайте конфигурацию:
+6. Замените bootstrap полным [joy-hub.conf](deploy/nginx/joy-hub.conf), установите общий snippet заголовков, настройте короткую ротацию access logs и перечитайте конфигурацию:
 
 ```bash
+sudo mkdir -p /etc/nginx/snippets
+sudo cp /tmp/joy-hub-nginx/snippets/joy-hub-security-headers.conf /etc/nginx/snippets/
 sudo cp /tmp/joy-hub-nginx/joy-hub.conf /etc/nginx/sites-available/joy-hub.conf
 sudo cp /tmp/joy-hub-nginx/joy-hub.logrotate /etc/logrotate.d/joy-hub
 sudo nginx -t
@@ -289,7 +318,21 @@ curl -I https://joy-hub.ru/
 curl --fail https://joy-hub.ru/api/v1/health
 ```
 
+Файл [joy-hub-security-headers.conf](deploy/nginx/snippets/joy-hub-security-headers.conf) содержит HSTS, `nosniff`, Referrer-Policy, Permissions-Policy и CSP. Он подключён на HTTPS server-level и повторно только в тех child locations, где собственный `add_header Cache-Control` по правилам Nginx отменяет наследование. CSP разрешает scripts и styles только с текущего origin; `unsafe-inline` не используется. Проверка конфигурации и реальных response headers в disposable Nginx с тестовым сертификатом:
+
+```bash
+npm --prefix frontend run build
+./scripts/test-nginx.sh
+
+for path in / /index.html /assets/ASSET_NAME.js /api/v1/health; do
+  curl -skI "https://joy-hub.ru${path}" | grep -Ei \
+    '^(strict-transport-security|x-content-type-options|referrer-policy|permissions-policy|content-security-policy):'
+done
+```
+
 Nginx ограничивает создание игр до 5 запросов/с на IP с небольшим burst, stats — до 30 запросов/мин, остальные API — до 20 запросов/с. Дополнительно backend разрешает visitor не более 20 незавершённых партий за последние 24 часа. Эти лимиты позволяют быстро нажимать «Сыграть ещё раз», но гасят очевидный спам. IP используется Nginx только для оперативного rate limit и стандартного access log; пример logrotate хранит не больше семи дневных файлов.
+
+Незавершёнными считаются только реально созданные `CREATED` и `CHOICE_MADE` записи за последние 24 часа. Открытие и обновление страницы их больше не создаёт. Старые незавершённые строки пока сохраняются для диагностики; если объём станет значимым, их можно удалять отдельной retention-задачей. Scheduler в приложение в этой итерации не добавлен.
 
 ## Эксплуатация
 
@@ -309,3 +352,5 @@ docker compose --env-file .env -f deploy/docker/docker-compose.yml \
 ```
 
 Ручными остаются только операции, требующие владения инфраструктурой или секретами: настройка DNS, генерация реальных WireGuard keys, создание `.env`, открытие firewall-портов на VPS, первый запуск Certbot и копирование frontend build на VPS.
+
+Backend использует стабильный Spring Boot 4.1.1 на Java 21. Версии Spring Framework, Jackson, Flyway, PostgreSQL driver, JUnit и Testcontainers управляются Spring Boot BOM; отдельная версия Testcontainers не закреплена.

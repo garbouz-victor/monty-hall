@@ -1,6 +1,7 @@
 package ru.joyhub.montyhall.application;
 
 import ru.joyhub.montyhall.domain.Strategy;
+import ru.joyhub.montyhall.domain.GameState;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -29,6 +30,21 @@ public final class GameResults {
     ) {
     }
 
+    public record GameSnapshot(
+            UUID gameId,
+            GameState state,
+            String commitment,
+            Integer initialChoice,
+            Integer openedBox,
+            Integer switchToBox,
+            Integer finalChoice,
+            Strategy strategy,
+            Integer keyBox,
+            Boolean won,
+            String nonce
+    ) {
+    }
+
     public record StrategyStats(long games, long wins, long losses, double winRate) {
     }
 
@@ -44,4 +60,3 @@ public final class GameResults {
     ) {
     }
 }
-

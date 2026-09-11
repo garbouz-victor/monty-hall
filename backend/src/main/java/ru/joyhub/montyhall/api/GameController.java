@@ -20,6 +20,7 @@ import static ru.joyhub.montyhall.api.GameApiModels.ChoiceResponse;
 import static ru.joyhub.montyhall.api.GameApiModels.CreateGameResponse;
 import static ru.joyhub.montyhall.api.GameApiModels.DecisionRequest;
 import static ru.joyhub.montyhall.api.GameApiModels.DecisionResponse;
+import static ru.joyhub.montyhall.api.GameApiModels.GameStateResponse;
 import static ru.joyhub.montyhall.api.GameApiModels.StatsResponse;
 
 @RestController
@@ -52,6 +53,16 @@ public class GameController {
         return ChoiceResponse.from(gameService.choose(gameId, visitorId, body.box()));
     }
 
+    @GetMapping("/games/{gameId}")
+    public GameStateResponse getGameState(
+            @PathVariable UUID gameId,
+            HttpServletRequest request,
+            HttpServletResponse response
+    ) {
+        UUID visitorId = visitors.resolve(request, response);
+        return GameStateResponse.from(gameService.getState(gameId, visitorId));
+    }
+
     @PostMapping("/games/{gameId}/decision")
     public DecisionResponse decide(
             @PathVariable UUID gameId,
@@ -68,4 +79,3 @@ public class GameController {
         return StatsResponse.from(gameService.getStats());
     }
 }
-

@@ -2,6 +2,7 @@ package ru.joyhub.montyhall.domain;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 public final class MontyHallRules {
 
@@ -30,6 +31,7 @@ public final class MontyHallRules {
     public static int finalChoice(int initialChoice, int openedBox, Strategy strategy) {
         validateBox(initialChoice);
         validateBox(openedBox);
+        Objects.requireNonNull(strategy, "strategy");
         if (initialChoice == openedBox) {
             throw new IllegalArgumentException("The host cannot open the selected box");
         }
@@ -53,4 +55,3 @@ public final class MontyHallRules {
         }
     }
 }
-
