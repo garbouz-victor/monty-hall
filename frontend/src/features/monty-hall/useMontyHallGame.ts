@@ -264,6 +264,9 @@ export function useMontyHallGame() {
       }
 
       if (snapshot.state === "COMPLETED") {
+        if (pending.type === "choice") {
+          clearPendingCreation(pending.creationRequestId);
+        }
         showCompleted(game, resultFromSnapshot(snapshot));
         return;
       }
@@ -273,6 +276,7 @@ export function useMontyHallGame() {
           markGameMissing();
           return;
         }
+        clearPendingCreation(pending.creationRequestId);
         setState((current) => ({
           ...current,
           phase: "choice-made",
@@ -353,6 +357,7 @@ export function useMontyHallGame() {
     }));
     try {
       const choice = await makeChoice(game.gameId, pending.box);
+      clearPendingCreation(pending.creationRequestId);
       setState((current) => ({
         ...current,
         phase: "choice-made",
@@ -404,7 +409,6 @@ export function useMontyHallGame() {
 
     try {
       const game = await createGame(pending.creationRequestId);
-      clearPendingCreation(pending.creationRequestId);
       await performChoice(game, pending);
     } catch (error) {
       if (error instanceof ApiError && error.code === "IDEMPOTENCY_KEY_CONFLICT") {
@@ -490,7 +494,6 @@ export function useMontyHallGame() {
           await performChoice(state.game, state.pendingMutation);
         } else {
           const game = await createGame(state.pendingMutation.creationRequestId);
-          clearPendingCreation(state.pendingMutation.creationRequestId);
           await performChoice(game, state.pendingMutation);
         }
       } else if (state.game) {

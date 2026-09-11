@@ -18,6 +18,7 @@ const stats = {
 type RecoveryMode = "created" | "choice-made" | "completed" | "offline" | "missing" | null;
 
 interface ApiOptions {
+  holdChoiceResponse?: boolean;
   loseChoiceResponse?: boolean;
   loseDecisionResponse?: boolean;
   conflictChoiceResponse?: boolean;
@@ -32,6 +33,12 @@ async function sha256(value: string): Promise<string> {
 
 async function installApi(options: ApiOptions = {}) {
   const commitment = await sha256(`v1:${gameId}:2:${nonce}`);
+  let releaseChoiceResponse: (() => void) | null = null;
+  const choiceResponseGate = options.holdChoiceResponse
+    ? new Promise<void>((resolve) => {
+        releaseChoiceResponse = resolve;
+      })
+    : null;
   const calls = {
     creates: 0,
     createKeys: [] as string[],
@@ -39,6 +46,7 @@ async function installApi(options: ApiOptions = {}) {
     choiceGameIds: [] as string[],
     strategies: [] as string[],
     recoveries: 0,
+    releaseChoiceResponse: () => releaseChoiceResponse?.(),
   };
 
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -57,6 +65,9 @@ async function installApi(options: ApiOptions = {}) {
     if (path.endsWith("/choice")) {
       calls.choices.push(JSON.parse(String(init?.body)).box);
       calls.choiceGameIds.push(path.split("/")[4] ?? "");
+      if (choiceResponseGate) {
+        await choiceResponseGate;
+      }
       if (options.loseChoiceResponse && calls.choices.length === 1) {
         throw new DOMException("choice response timed out", "AbortError");
       }
@@ -155,6 +166,23 @@ describe("Monty Hall application", () => {
     expect(await screen.findByText("Честность игры проверена")).toBeInTheDocument();
   });
 
+  it("keeps pending creation after create and clears it only after choice succeeds", async () => {
+    const calls = await installApi({ holdChoiceResponse: true });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Выбрать ящик 3" }));
+    await waitFor(() => expect(calls.choices).toEqual([3]));
+
+    const stored = JSON.parse(sessionStorage.getItem(PENDING_CREATION_STORAGE_KEY) ?? "null");
+    expect(stored).toEqual({ creationRequestId: calls.createKeys[0], box: 3 });
+    expect(calls.choiceGameIds).toEqual([gameId]);
+
+    calls.releaseChoiceResponse();
+    expect(await screen.findByRole("button", { name: "Поменять на ящик №2" })).toBeEnabled();
+    expect(sessionStorage.getItem(PENDING_CREATION_STORAGE_KEY)).toBeNull();
+  });
+
   it("sends STAY and displays a losing result", async () => {
     const calls = await installApi();
     const user = userEvent.setup();
@@ -180,6 +208,7 @@ describe("Monty Hall application", () => {
     expect(screen.getByRole("button", { name: "Выбрать ящик 2" })).toBeDisabled();
     expect(calls.choices).toEqual([3]);
     expect(calls.recoveries).toBe(1);
+    expect(sessionStorage.getItem(PENDING_CREATION_STORAGE_KEY)).toBeNull();
   });
 
   it("reconciles a 409 choice response with server state", async () => {
@@ -203,10 +232,12 @@ describe("Monty Hall application", () => {
     expect(await screen.findByRole("button", { name: "Повторить выбор ящика №3" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Выбрать ящик 1" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Выбрать ящик 2" })).toBeDisabled();
+    expect(sessionStorage.getItem(PENDING_CREATION_STORAGE_KEY)).not.toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Повторить выбор ящика №3" }));
     expect(await screen.findByRole("button", { name: "Поменять на ящик №2" })).toBeEnabled();
     expect(calls.choices).toEqual([3, 3]);
+    expect(sessionStorage.getItem(PENDING_CREATION_STORAGE_KEY)).toBeNull();
   });
 
   it("retries a lost create response with the same key and original box", async () => {
@@ -243,6 +274,45 @@ describe("Monty Hall application", () => {
     expect(await screen.findByRole("button", { name: "Поменять на ящик №2" })).toBeEnabled();
     expect(calls.createKeys).toEqual([creationRequestId]);
     expect(calls.choices).toEqual([3]);
+    expect(sessionStorage.getItem(PENDING_CREATION_STORAGE_KEY)).toBeNull();
+  });
+
+  it("resumes the same game after reload between create and confirmed choice", async () => {
+    const firstCalls = await installApi({ holdChoiceResponse: true });
+    const user = userEvent.setup();
+    const firstApp = render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Выбрать ящик 3" }));
+    await waitFor(() => expect(firstCalls.choices).toEqual([3]));
+    const creationRequestId = firstCalls.createKeys[0];
+    expect(JSON.parse(sessionStorage.getItem(PENDING_CREATION_STORAGE_KEY) ?? "null"))
+      .toEqual({ creationRequestId, box: 3 });
+    firstApp.unmount();
+
+    const resumedCalls = await installApi();
+    render(<App />);
+    expect(await screen.findByText("Не удалось подтвердить начало игры. Ваш выбор ящика №3 сохранён."))
+      .toBeInTheDocument();
+    expect(resumedCalls.creates).toBe(0);
+
+    await user.click(screen.getByRole("button", { name: "Повторить выбор ящика №3" }));
+    expect(await screen.findByRole("button", { name: "Поменять на ящик №2" })).toBeEnabled();
+    expect(resumedCalls.createKeys).toEqual([creationRequestId]);
+    expect(firstCalls.choiceGameIds).toEqual([gameId]);
+    expect(resumedCalls.choiceGameIds).toEqual([gameId]);
+    expect(resumedCalls.choices).toEqual([3]);
+    expect(sessionStorage.getItem(PENDING_CREATION_STORAGE_KEY)).toBeNull();
+    firstCalls.releaseChoiceResponse();
+  });
+
+  it("clears pending creation when choice recovery finds COMPLETED", async () => {
+    await installApi({ loseChoiceResponse: true, recovery: "completed" });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Выбрать ящик 3" }));
+    expect(await screen.findByText("🎉 Вы выиграли!")).toBeInTheDocument();
+    expect(await screen.findByText("Честность игры проверена")).toBeInTheDocument();
     expect(sessionStorage.getItem(PENDING_CREATION_STORAGE_KEY)).toBeNull();
   });
 
@@ -290,6 +360,7 @@ describe("Monty Hall application", () => {
     expect(screen.getByRole("button", { name: "Выбрать ящик 2" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Выбрать ящик 3" })).toBeDisabled();
     expect(calls.choices).toEqual([3]);
+    expect(sessionStorage.getItem(PENDING_CREATION_STORAGE_KEY)).not.toBeNull();
   });
 
   it("offers a clean restart when recovery returns 404", async () => {
@@ -299,8 +370,10 @@ describe("Monty Hall application", () => {
 
     await user.click(await screen.findByRole("button", { name: "Выбрать ящик 3" }));
     expect(await screen.findByText("Эту партию не удалось восстановить. Начните новую игру.")).toBeInTheDocument();
+    expect(sessionStorage.getItem(PENDING_CREATION_STORAGE_KEY)).not.toBeNull();
     await user.click(screen.getByRole("button", { name: "Начать заново" }));
     expect(await screen.findByRole("button", { name: "Выбрать ящик 1" })).toBeEnabled();
+    expect(sessionStorage.getItem(PENDING_CREATION_STORAGE_KEY)).toBeNull();
   });
 
   it("shows public per-strategy statistics", async () => {
