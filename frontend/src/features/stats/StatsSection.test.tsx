@@ -34,8 +34,11 @@ describe("public strategy statistics", () => {
     expect(screen.getByText("8 побед из 10 игр")).toBeInTheDocument();
     expect(screen.getByText("21,4%")).toBeInTheDocument();
     expect(screen.getByText("6 побед из 28 игр")).toBeInTheDocument();
-    expect(screen.getByText("66,7%")).toBeInTheDocument();
-    expect(screen.getByText("33,3%")).toBeInTheDocument();
+    const theoryLines = document.querySelectorAll(".theory-line");
+    expect(theoryLines).toHaveLength(2);
+    expect(theoryLines[0]).toHaveTextContent("Теоретическая вероятность: 66,7%");
+    expect(theoryLines[1]).toHaveTextContent("Теоретическая вероятность: 33,3%");
+    expect(document.body).not.toHaveTextContent("Теория при большой выборке");
     expect(screen.getByText(/не обязаны складываться в 100%/)).toBeInTheDocument();
     expect(screen.getByRole("progressbar", {
       name: "Доля побед среди игр со сменой выбора: 80,0%",

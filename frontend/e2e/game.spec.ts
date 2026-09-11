@@ -71,6 +71,12 @@ test("@mobile new game → select → switch → verified win", async ({ page })
   await expect(page.getByText("8 побед из 10 игр", { exact: true })).toBeVisible();
   await expect(page.getByText("21,4%", { exact: true })).toBeVisible();
   await expect(page.getByText("6 побед из 28 игр", { exact: true })).toBeVisible();
+  await expect(page.getByRole("progressbar", {
+    name: "Доля побед среди игр со сменой выбора: 80,0%",
+  })).toBeVisible();
+  await expect(page.getByRole("progressbar", {
+    name: "Доля побед среди игр без смены выбора: 21,4%",
+  })).toBeVisible();
   await expect(page.getByText(/не обязаны складываться в 100%/)).toBeVisible();
   await expect(page.getByText(/Пока игр немного, поэтому результаты могут заметно отличаться от теории/)).toBeVisible();
   await expect(page.locator(".key-symbol")).toHaveCSS("opacity", "1");

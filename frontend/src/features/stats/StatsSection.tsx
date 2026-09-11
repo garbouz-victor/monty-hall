@@ -76,7 +76,7 @@ function StrategyCard({
       ) : (
         <p className="stats-card__empty">Пока нет игр</p>
       )}
-      <p className="theory-line">Теория при большой выборке: <strong>{percent(theory)}</strong></p>
+      <p className="theory-line">Теоретическая вероятность: <strong>{percent(theory)}</strong></p>
       {hasGames ? (
         <dl className="stats-list">
           <div><dt>Игры</dt><dd>{numberFormat.format(stats.games)}</dd></div>
