@@ -35,7 +35,7 @@ export type GamePhase =
   | "unavailable";
 
 export type PendingMutation =
-  | { type: "choice"; box: BoxNumber }
+  | { type: "choice"; box: BoxNumber; creationRequestId: string }
   | { type: "decision"; strategy: Strategy }
   | null;
 
@@ -68,6 +68,58 @@ const initialState: MontyHallGameState = {
   retryAction: null,
   retryLabel: null,
 };
+
+export const PENDING_CREATION_STORAGE_KEY = "joyhub.pending-game-creation.v1";
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type PendingChoice = Extract<Exclude<PendingMutation, null>, { type: "choice" }>;
+
+function loadPendingCreation(): PendingChoice | null {
+  try {
+    const raw = window.sessionStorage.getItem(PENDING_CREATION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { creationRequestId?: unknown; box?: unknown };
+    if (
+      typeof parsed.creationRequestId !== "string"
+      || !UUID_PATTERN.test(parsed.creationRequestId)
+      || ![1, 2, 3].includes(parsed.box as number)
+    ) {
+      window.sessionStorage.removeItem(PENDING_CREATION_STORAGE_KEY);
+      return null;
+    }
+    return {
+      type: "choice",
+      box: parsed.box as BoxNumber,
+      creationRequestId: parsed.creationRequestId,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function savePendingCreation(pending: PendingChoice): void {
+  try {
+    window.sessionStorage.setItem(PENDING_CREATION_STORAGE_KEY, JSON.stringify({
+      creationRequestId: pending.creationRequestId,
+      box: pending.box,
+    }));
+  } catch {
+    // The in-memory state still preserves the request when storage is unavailable.
+  }
+}
+
+function clearPendingCreation(creationRequestId?: string): void {
+  try {
+    if (creationRequestId) {
+      const pending = loadPendingCreation();
+      if (pending && pending.creationRequestId !== creationRequestId) return;
+    }
+    window.sessionStorage.removeItem(PENDING_CREATION_STORAGE_KEY);
+  } catch {
+    // Storage availability must not block gameplay.
+  }
+}
 
 function choiceFromSnapshot(snapshot: Extract<GameStateResponse, { state: "CHOICE_MADE" }>): ChoiceResult {
   return {
@@ -130,19 +182,31 @@ export function useMontyHallGame() {
     }));
 
     const [health, stats] = await Promise.allSettled([checkHealth(), getStats()]);
+    const pendingCreation = loadPendingCreation();
+    const backendAvailable = health.status === "fulfilled";
     setState((current) => ({
       ...current,
-      phase: health.status === "fulfilled" ? "ready" : "unavailable",
+      phase: backendAvailable
+        ? pendingCreation ? "start-failed" : "ready"
+        : "unavailable",
       game: null,
       choice: null,
       result: null,
-      pendingMutation: null,
+      pendingMutation: pendingCreation,
       fairness: null,
       stats: stats.status === "fulfilled" ? stats.value : current.stats,
       statsLoading: false,
-      error: health.status === "fulfilled" ? null : "Игровой сервер сейчас временно недоступен.",
-      retryAction: health.status === "fulfilled" ? null : "boot",
-      retryLabel: health.status === "fulfilled" ? null : "Попробовать снова",
+      error: backendAvailable
+        ? pendingCreation
+          ? `Не удалось подтвердить начало игры. Ваш выбор ящика №${pendingCreation.box} сохранён.`
+          : null
+        : "Игровой сервер сейчас временно недоступен.",
+      retryAction: backendAvailable
+        ? pendingCreation ? "repeat-pending" : null
+        : "boot",
+      retryLabel: backendAvailable && pendingCreation
+        ? `Повторить выбор ящика №${pendingCreation.box}`
+        : backendAvailable ? null : "Попробовать снова",
     }));
   }, []);
 
@@ -323,7 +387,12 @@ export function useMontyHallGame() {
   const selectBox = useCallback(async (box: BoxNumber) => {
     if (state.phase !== "ready" || mutationInFlight.current) return;
     mutationInFlight.current = true;
-    const pending = { type: "choice", box } as const;
+    const pending = {
+      type: "choice",
+      box,
+      creationRequestId: crypto.randomUUID(),
+    } as const;
+    savePendingCreation(pending);
     setState((current) => ({
       ...current,
       phase: "starting",
@@ -334,9 +403,23 @@ export function useMontyHallGame() {
     }));
 
     try {
-      const game = await createGame();
+      const game = await createGame(pending.creationRequestId);
+      clearPendingCreation(pending.creationRequestId);
       await performChoice(game, pending);
     } catch (error) {
+      if (error instanceof ApiError && error.code === "IDEMPOTENCY_KEY_CONFLICT") {
+        clearPendingCreation(pending.creationRequestId);
+        setState((current) => ({
+          ...current,
+          phase: "start-failed",
+          game: null,
+          pendingMutation: null,
+          error: "Эту попытку начала игры нельзя восстановить. Начните новую игру.",
+          retryAction: "reset",
+          retryLabel: "Начать заново",
+        }));
+        return;
+      }
       const rateLimited = error instanceof ApiError && error.kind === "RATE_LIMIT";
       setState((current) => ({
         ...current,
@@ -345,7 +428,7 @@ export function useMontyHallGame() {
         pendingMutation: pending,
         error: rateLimited
           ? "Слишком много начатых партий. Завершите текущие партии или попробуйте позже."
-          : "Не удалось начать игру. Ваш выбор сохранён в браузере.",
+          : `Не удалось подтвердить начало игры. Ваш выбор ящика №${box} сохранён.`,
         retryAction: "repeat-pending",
         retryLabel: `Повторить выбор ящика №${box}`,
       }));
@@ -367,6 +450,7 @@ export function useMontyHallGame() {
   const resetRound = useCallback(() => {
     mutationInFlight.current = false;
     recoveryInFlight.current = false;
+    clearPendingCreation();
     setState((current) => ({
       ...current,
       phase: "ready",
@@ -405,7 +489,8 @@ export function useMontyHallGame() {
         if (state.game) {
           await performChoice(state.game, state.pendingMutation);
         } else {
-          const game = await createGame();
+          const game = await createGame(state.pendingMutation.creationRequestId);
+          clearPendingCreation(state.pendingMutation.creationRequestId);
           await performChoice(game, state.pendingMutation);
         }
       } else if (state.game) {
@@ -413,12 +498,30 @@ export function useMontyHallGame() {
       }
     } catch (error) {
       const pending = state.pendingMutation;
+      if (
+        pending.type === "choice"
+        && error instanceof ApiError
+        && error.code === "IDEMPOTENCY_KEY_CONFLICT"
+      ) {
+        clearPendingCreation(pending.creationRequestId);
+        setState((current) => ({
+          ...current,
+          phase: "start-failed",
+          pendingMutation: null,
+          error: "Эту попытку начала игры нельзя восстановить. Начните новую игру.",
+          retryAction: "reset",
+          retryLabel: "Начать заново",
+        }));
+        return;
+      }
       setState((current) => ({
         ...current,
         phase: "start-failed",
         error: error instanceof ApiError && error.kind === "RATE_LIMIT"
           ? "Слишком много начатых партий. Попробуйте позже."
-          : "Не удалось начать игру. Ваш выбор сохранён в браузере.",
+          : pending.type === "choice"
+            ? `Не удалось подтвердить начало игры. Ваш выбор ящика №${pending.box} сохранён.`
+            : "Не удалось выполнить действие. Повторите прежний ход.",
         retryAction: "repeat-pending",
         retryLabel: pendingActionLabel(pending),
       }));

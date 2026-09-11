@@ -2,11 +2,15 @@ import { expect, test } from "@playwright/test";
 
 test("real frontend → backend → PostgreSQL Monty Hall flow", async ({ page, context }) => {
   const mutationRequests: string[] = [];
+  let creationRequestId: string | undefined;
 
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
     if (request.method() === "POST" && path.startsWith("/api/v1/games")) {
       mutationRequests.push(path);
+      if (path === "/api/v1/games") {
+        creationRequestId = request.headers()["idempotency-key"];
+      }
     }
   });
 
@@ -29,6 +33,9 @@ test("real frontend → backend → PostgreSQL Monty Hall flow", async ({ page, 
   expect(mutationRequests).toHaveLength(2);
   expect(mutationRequests[0]).toBe("/api/v1/games");
   expect(mutationRequests[1]).toMatch(/^\/api\/v1\/games\/[0-9a-f-]+\/choice$/);
+  expect(creationRequestId).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  );
   expect(createdPayload).toEqual(expect.objectContaining({
     gameId: expect.any(String),
     commitment: expect.stringMatching(/^[0-9a-f]{64}$/),
@@ -46,6 +53,17 @@ test("real frontend → backend → PostgreSQL Monty Hall flow", async ({ page, 
   expect(stateBeforeDecision.state).toBe("CHOICE_MADE");
   expect(stateBeforeDecision).not.toHaveProperty("keyBox");
   expect(stateBeforeDecision).not.toHaveProperty("nonce");
+
+  const replayedCreate = await page.evaluate(async ({ idempotencyKey }) => {
+    const response = await fetch("/api/v1/games", {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+    });
+    return { status: response.status, body: await response.json() };
+  }, { idempotencyKey: creationRequestId! });
+  expect(replayedCreate.status).toBe(201);
+  expect(replayedCreate.body).toEqual(createdPayload);
+  expect(replayedCreate.body).not.toHaveProperty("creationRequestId");
 
   await switchButton.click();
   await expect(page.getByText(/^(🎉 Вы выиграли!|Не повезло 🙂)$/)).toBeVisible();

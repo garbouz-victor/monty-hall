@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import ru.joyhub.montyhall.application.GameService;
@@ -37,9 +38,14 @@ public class GameController {
 
     @PostMapping("/games")
     @ResponseStatus(HttpStatus.CREATED)
-    public CreateGameResponse createGame(HttpServletRequest request, HttpServletResponse response) {
-        UUID visitorId = visitors.resolve(request, response);
-        return CreateGameResponse.from(gameService.create(visitorId));
+    public CreateGameResponse createGame(
+            @RequestHeader("Idempotency-Key") UUID creationRequestId,
+            HttpServletRequest request,
+            HttpServletResponse response
+    ) {
+        var result = gameService.create(creationRequestId, visitors.find(request));
+        visitors.write(response, result.visitorId());
+        return CreateGameResponse.from(result);
     }
 
     @PostMapping("/games/{gameId}/choice")

@@ -3,6 +3,8 @@ package ru.joyhub.montyhall.api;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.Cookie;
+import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.MigrationVersion;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -49,6 +51,7 @@ class GameApiIntegrationTest {
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("joyhub.visitor-cookie.secure", () -> false);
+        registry.add("joyhub.abuse.max-open-games", () -> 3);
     }
 
     @Autowired
@@ -157,6 +160,181 @@ class GameApiIntegrationTest {
                 .andExpect(jsonPath("$.keyBox").doesNotExist())
                 .andExpect(jsonPath("$.nonce").doesNotExist())
                 .andExpect(jsonPath("$.initialChoice").doesNotExist());
+    }
+
+    @Test
+    void sameCreationRequestReturnsSameGameAndCommitment() throws Exception {
+        UUID creationRequestId = UUID.randomUUID();
+        StartedGame first = startGame(creationRequestId);
+        StartedGame replay = startGame(creationRequestId, first.cookie());
+
+        assertThat(replay.id()).isEqualTo(first.id());
+        assertThat(replay.commitment()).isEqualTo(first.commitment());
+        assertThat(countByCreationRequestId(creationRequestId)).isEqualTo(1);
+    }
+
+    @Test
+    void differentCreationRequestsCreateDifferentGames() throws Exception {
+        StartedGame first = startGame();
+        StartedGame second = startGame(UUID.randomUUID(), first.cookie());
+
+        assertThat(second.id()).isNotEqualTo(first.id());
+        assertThat(second.commitment()).isNotEqualTo(first.commitment());
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM game_round", Long.class)).isEqualTo(2);
+    }
+
+    @Test
+    void replayWithoutCookieRestoresOriginalVisitorOwnership() throws Exception {
+        UUID creationRequestId = UUID.randomUUID();
+        StartedGame first = startGame(creationRequestId);
+        StartedGame recovered = startGame(creationRequestId);
+
+        assertThat(recovered.id()).isEqualTo(first.id());
+        assertThat(recovered.commitment()).isEqualTo(first.commitment());
+        assertThat(recovered.cookie().getValue()).isEqualTo(first.cookie().getValue());
+        assertThat(countByCreationRequestId(creationRequestId)).isEqualTo(1);
+        choose(recovered, 3).andExpect(status().isOk());
+    }
+
+    @Test
+    void replayReturnsOriginalCreateResponseAfterChoice() throws Exception {
+        StartedGame first = startGame();
+        choose(first, 2).andExpect(status().isOk());
+
+        StartedGame replay = startGame(first.creationRequestId(), first.cookie());
+        assertThat(replay.id()).isEqualTo(first.id());
+        assertThat(replay.commitment()).isEqualTo(first.commitment());
+        assertThat(countByCreationRequestId(first.creationRequestId())).isEqualTo(1);
+    }
+
+    @Test
+    void replayReturnsOriginalCreateResponseAfterCompletion() throws Exception {
+        StartedGame first = startGame();
+        choose(first, 2).andExpect(status().isOk());
+        decide(first, "SWITCH").andExpect(status().isOk());
+
+        StartedGame replay = startGame(first.creationRequestId(), first.cookie());
+        assertThat(replay.id()).isEqualTo(first.id());
+        assertThat(replay.commitment()).isEqualTo(first.commitment());
+        assertThat(countByCreationRequestId(first.creationRequestId())).isEqualTo(1);
+    }
+
+    @Test
+    void sameCreationRequestWithAnotherVisitorCookieIsRejectedWithoutChangingOwnership() throws Exception {
+        StartedGame first = startGame();
+        StartedGame anotherVisitor = startGame();
+
+        createGame(first.creationRequestId(), anotherVisitor.cookie())
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_CONFLICT"));
+
+        UUID storedVisitor = jdbcTemplate.queryForObject(
+                "SELECT visitor_id FROM game_round WHERE id = ?",
+                UUID.class,
+                first.id()
+        );
+        assertThat(storedVisitor).isEqualTo(UUID.fromString(first.cookie().getValue()));
+        assertThat(countByCreationRequestId(first.creationRequestId())).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentIdenticalCreationRequestsReturnOnePersistedGame() throws Exception {
+        UUID creationRequestId = UUID.randomUUID();
+        CountDownLatch start = new CountDownLatch(1);
+
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var firstCall = executor.submit(() -> {
+                start.await(10, TimeUnit.SECONDS);
+                return createGame(creationRequestId).andReturn();
+            });
+            var secondCall = executor.submit(() -> {
+                start.await(10, TimeUnit.SECONDS);
+                return createGame(creationRequestId).andReturn();
+            });
+            start.countDown();
+
+            MvcResult firstResponse = firstCall.get(20, TimeUnit.SECONDS);
+            MvcResult secondResponse = secondCall.get(20, TimeUnit.SECONDS);
+            assertThat(firstResponse.getResponse().getStatus()).isEqualTo(201);
+            assertThat(secondResponse.getResponse().getStatus()).isEqualTo(201);
+
+            StartedGame first = startedGame(creationRequestId, firstResponse);
+            StartedGame second = startedGame(creationRequestId, secondResponse);
+            assertThat(second.id()).isEqualTo(first.id());
+            assertThat(second.commitment()).isEqualTo(first.commitment());
+            assertThat(second.cookie().getValue()).isEqualTo(first.cookie().getValue());
+        }
+
+        assertThat(countByCreationRequestId(creationRequestId)).isEqualTo(1);
+    }
+
+    @Test
+    void replayBypassesOpenGameLimitButANewCreationDoesNot() throws Exception {
+        StartedGame first = startGame();
+        startGame(UUID.randomUUID(), first.cookie());
+        startGame(UUID.randomUUID(), first.cookie());
+
+        startGame(first.creationRequestId(), first.cookie());
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM game_round", Long.class)).isEqualTo(3);
+
+        createGame(UUID.randomUUID(), first.cookie())
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.code").value("TOO_MANY_OPEN_GAMES"));
+    }
+
+    @Test
+    void createRequiresAUuidIdempotencyKey() throws Exception {
+        mvc.perform(post("/api/v1/games"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+
+        mvc.perform(post("/api/v1/games").header("Idempotency-Key", "not-a-uuid"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void v2MigrationBackfillsExistingGamesAndAddsUniqueness() {
+        String schema = "migration_test_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            Flyway.configure()
+                    .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                    .schemas(schema)
+                    .defaultSchema(schema)
+                    .locations("classpath:db/migration")
+                    .target(MigrationVersion.fromVersion("1"))
+                    .load()
+                    .migrate();
+
+            UUID existingGameId = UUID.randomUUID();
+            jdbcTemplate.update("""
+                            INSERT INTO %s.game_round (
+                                id, state, key_box, nonce, commitment, visitor_id, created_at, version
+                            ) VALUES (?, 'CREATED', 1, ?, ?, ?, now(), 0)
+                            """.formatted(schema),
+                    existingGameId,
+                    "a".repeat(64),
+                    "b".repeat(64),
+                    UUID.randomUUID()
+            );
+
+            Flyway.configure()
+                    .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                    .schemas(schema)
+                    .defaultSchema(schema)
+                    .locations("classpath:db/migration")
+                    .load()
+                    .migrate();
+
+            UUID creationRequestId = jdbcTemplate.queryForObject(
+                    "SELECT creation_request_id FROM %s.game_round WHERE id = ?".formatted(schema),
+                    UUID.class,
+                    existingGameId
+            );
+            assertThat(creationRequestId).isEqualTo(existingGameId);
+        } finally {
+            jdbcTemplate.execute("DROP SCHEMA IF EXISTS %s CASCADE".formatted(schema));
+        }
     }
 
     @Test
@@ -312,19 +490,48 @@ class GameApiIntegrationTest {
     }
 
     private StartedGame startGame() throws Exception {
-        MvcResult result = mvc.perform(post("/api/v1/games"))
+        return startGame(UUID.randomUUID());
+    }
+
+    private StartedGame startGame(UUID creationRequestId, Cookie... cookies) throws Exception {
+        MvcResult result = createGame(creationRequestId, cookies)
                 .andExpect(status().isCreated())
                 .andExpect(header().exists(HttpHeaders.SET_COOKIE))
                 .andExpect(jsonPath("$.gameId").isString())
                 .andExpect(jsonPath("$.commitment").isString())
+                .andExpect(jsonPath("$.creationRequestId").doesNotExist())
                 .andExpect(jsonPath("$.keyBox").doesNotExist())
                 .andExpect(jsonPath("$.nonce").doesNotExist())
                 .andReturn();
+        return startedGame(creationRequestId, result);
+    }
+
+    private StartedGame startedGame(UUID creationRequestId, MvcResult result) throws Exception {
         JsonNode body = json(result);
         return new StartedGame(
                 UUID.fromString(body.get("gameId").stringValue()),
                 body.get("commitment").stringValue(),
-                result.getResponse().getCookie(VisitorIdentityService.COOKIE_NAME)
+                result.getResponse().getCookie(VisitorIdentityService.COOKIE_NAME),
+                creationRequestId
+        );
+    }
+
+    private org.springframework.test.web.servlet.ResultActions createGame(
+            UUID creationRequestId,
+            Cookie... cookies
+    ) throws Exception {
+        var request = post("/api/v1/games").header("Idempotency-Key", creationRequestId);
+        if (cookies.length > 0) {
+            request.cookie(cookies);
+        }
+        return mvc.perform(request);
+    }
+
+    private long countByCreationRequestId(UUID creationRequestId) {
+        return jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM game_round WHERE creation_request_id = ?",
+                Long.class,
+                creationRequestId
         );
     }
 
@@ -350,6 +557,6 @@ class GameApiIntegrationTest {
         return objectMapper.readTree(result.getResponse().getContentAsByteArray());
     }
 
-    private record StartedGame(UUID id, String commitment, Cookie cookie) {
+    private record StartedGame(UUID id, String commitment, Cookie cookie, UUID creationRequestId) {
     }
 }

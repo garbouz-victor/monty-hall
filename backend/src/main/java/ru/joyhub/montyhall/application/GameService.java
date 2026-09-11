@@ -10,6 +10,7 @@ import ru.joyhub.montyhall.domain.GameState;
 import ru.joyhub.montyhall.domain.HostMove;
 import ru.joyhub.montyhall.domain.MontyHallRules;
 import ru.joyhub.montyhall.domain.Strategy;
+import ru.joyhub.montyhall.persistence.GameCreationRepository;
 import ru.joyhub.montyhall.persistence.GameRoundEntity;
 import ru.joyhub.montyhall.persistence.GameRoundRepository;
 import ru.joyhub.montyhall.persistence.StatsQueryRepository;
@@ -17,6 +18,7 @@ import ru.joyhub.montyhall.persistence.StatsQueryRepository;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Optional;
 import java.util.UUID;
 
 import static ru.joyhub.montyhall.application.GameResults.Choice;
@@ -35,6 +37,7 @@ public class GameService {
     private static final double STAY_THEORY = 1.0 / 3.0;
 
     private final GameRoundRepository games;
+    private final GameCreationRepository gameCreation;
     private final StatsQueryRepository stats;
     private final GameRandomSource random;
     private final CommitmentService commitments;
@@ -44,6 +47,7 @@ public class GameService {
 
     public GameService(
             GameRoundRepository games,
+            GameCreationRepository gameCreation,
             StatsQueryRepository stats,
             GameRandomSource random,
             CommitmentService commitments,
@@ -52,6 +56,7 @@ public class GameService {
             @Value("${joyhub.abuse.open-game-window:PT24H}") Duration openGameWindow
     ) {
         this.games = games;
+        this.gameCreation = gameCreation;
         this.stats = stats;
         this.random = random;
         this.commitments = commitments;
@@ -60,8 +65,14 @@ public class GameService {
         this.openGameWindow = openGameWindow;
     }
 
-    @Transactional
-    public Created create(UUID visitorId) {
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public Created create(UUID creationRequestId, Optional<UUID> requestVisitorId) {
+        Optional<GameCreationRepository.CreationRecord> existing = gameCreation.find(creationRequestId);
+        if (existing.isPresent()) {
+            return replay(existing.get(), requestVisitorId);
+        }
+
+        UUID visitorId = requestVisitorId.orElseGet(UUID::randomUUID);
         Instant now = clock.instant();
         long openGames = games.countByVisitorIdAndStateNotAndCreatedAtAfter(
                 visitorId,
@@ -76,9 +87,24 @@ public class GameService {
         int keyBox = random.nextInt(MontyHallRules.BOX_COUNT) + 1;
         String nonce = random.newNonce();
         String commitment = commitments.create(gameId, keyBox, nonce);
-        games.save(GameRoundEntity.create(gameId, keyBox, nonce, commitment, visitorId, now));
-        log.info("game_created gameId={}", gameId);
-        return new Created(gameId, commitment);
+        GameCreationRepository.CreationAttempt attempt = gameCreation.insertOrGet(
+                creationRequestId,
+                gameId,
+                keyBox,
+                nonce,
+                commitment,
+                visitorId,
+                now
+        );
+
+        GameCreationRepository.CreationRecord stored = attempt.game();
+        ensureVisitorMayReplay(stored, requestVisitorId);
+        if (attempt.created()) {
+            log.info("game_created gameId={}", stored.gameId());
+        } else {
+            log.info("game_create_replayed gameId={}", stored.gameId());
+        }
+        return createdResult(stored);
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
@@ -173,6 +199,28 @@ public class GameService {
     private GameRoundEntity ownedGameForUpdate(UUID gameId, UUID visitorId) {
         return games.findOwnedForUpdate(gameId, visitorId)
                 .orElseThrow(() -> new GameNotFoundException(gameId));
+    }
+
+    private Created replay(
+            GameCreationRepository.CreationRecord existing,
+            Optional<UUID> requestVisitorId
+    ) {
+        ensureVisitorMayReplay(existing, requestVisitorId);
+        log.info("game_create_replayed gameId={}", existing.gameId());
+        return createdResult(existing);
+    }
+
+    private static void ensureVisitorMayReplay(
+            GameCreationRepository.CreationRecord existing,
+            Optional<UUID> requestVisitorId
+    ) {
+        if (requestVisitorId.isPresent() && !requestVisitorId.get().equals(existing.visitorId())) {
+            throw new IdempotencyKeyConflictException();
+        }
+    }
+
+    private static Created createdResult(GameCreationRepository.CreationRecord game) {
+        return new Created(game.gameId(), game.commitment(), game.visitorId());
     }
 
     private static Choice choiceResult(GameRoundEntity game) {

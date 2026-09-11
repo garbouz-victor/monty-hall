@@ -8,11 +8,13 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import ru.joyhub.montyhall.application.GameNotFoundException;
 import ru.joyhub.montyhall.application.InvalidGameTransitionException;
+import ru.joyhub.montyhall.application.IdempotencyKeyConflictException;
 import ru.joyhub.montyhall.application.TooManyOpenGamesException;
 
 import java.net.URI;
@@ -32,6 +34,20 @@ public class GlobalExceptionHandler {
         return problem(HttpStatus.CONFLICT, "INVALID_GAME_STATE", "Действие недоступно", exception.getMessage(), request);
     }
 
+    @ExceptionHandler(IdempotencyKeyConflictException.class)
+    ResponseEntity<ProblemDetail> idempotencyConflict(
+            IdempotencyKeyConflictException exception,
+            HttpServletRequest request
+    ) {
+        return problem(
+                HttpStatus.CONFLICT,
+                "IDEMPOTENCY_KEY_CONFLICT",
+                "Ключ создания уже использован",
+                "Начните новую партию.",
+                request
+        );
+    }
+
     @ExceptionHandler(TooManyOpenGamesException.class)
     ResponseEntity<ProblemDetail> tooManyOpenGames(TooManyOpenGamesException exception, HttpServletRequest request) {
         return problem(
@@ -46,6 +62,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler({
             MethodArgumentNotValidException.class,
             MethodArgumentTypeMismatchException.class,
+            MissingRequestHeaderException.class,
             HttpMessageNotReadableException.class,
             IllegalArgumentException.class
     })

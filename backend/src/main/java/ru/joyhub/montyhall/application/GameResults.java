@@ -11,7 +11,7 @@ public final class GameResults {
     private GameResults() {
     }
 
-    public record Created(UUID gameId, String commitment) {
+    public record Created(UUID gameId, String commitment, UUID visitorId) {
     }
 
     public record Choice(int selectedBox, int openedBox, int switchToBox) {

@@ -24,12 +24,25 @@ public class VisitorIdentityService {
     }
 
     public UUID resolve(HttpServletRequest request, HttpServletResponse response) {
-        Optional<UUID> existing = findValidCookie(request);
+        Optional<UUID> existing = find(request);
         if (existing.isPresent()) {
             return existing.get();
         }
 
-        UUID visitorId = UUID.randomUUID();
+        UUID visitorId = newVisitorId();
+        write(response, visitorId);
+        return visitorId;
+    }
+
+    public Optional<UUID> find(HttpServletRequest request) {
+        return findValidCookie(request);
+    }
+
+    public UUID newVisitorId() {
+        return UUID.randomUUID();
+    }
+
+    public void write(HttpServletResponse response, UUID visitorId) {
         ResponseCookie cookie = ResponseCookie.from(COOKIE_NAME, visitorId.toString())
                 .httpOnly(true)
                 .secure(secure)
@@ -38,7 +51,6 @@ public class VisitorIdentityService {
                 .maxAge(Duration.ofDays(365))
                 .build();
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
-        return visitorId;
     }
 
     private static Optional<UUID> findValidCookie(HttpServletRequest request) {

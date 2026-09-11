@@ -53,7 +53,9 @@ CREATED → CHOICE_MADE → COMPLETED
 
 Операции `choice` и `decision` блокируют строку `SELECT ... FOR UPDATE`. Повтор того же `choice` или того же финального `decision` возвращает уже сохранённый ответ. Изменить выбранный ящик, стратегию или завершённую партию нельзя. Поэтому повтор запроса после потери сетевого ответа не увеличивает статистику дважды.
 
-При обычной загрузке frontend делает только `GET /health` и `GET /stats`. Серверная партия создаётся лениво после первого нажатия на ящик: frontend сохраняет выбранный номер, последовательно отправляет `POST /games`, а затем отдельный `POST /games/{id}/choice`. Кнопка «Сыграть ещё раз» только возвращает UI к трём закрытым ящикам. Это не расходует лимит незавершённых партий до следующего реального выбора.
+При обычной загрузке frontend делает только `GET /health` и `GET /stats`. Серверная партия создаётся лениво после первого нажатия на ящик: frontend сохраняет выбранный номер и новый UUID в `sessionStorage`, отправляет UUID в обязательном заголовке `Idempotency-Key`, затем последовательно вызывает `POST /games` и отдельный `POST /games/{id}/choice`. UUID удаляется из `sessionStorage`, когда frontend получил `gameId` и `commitment`. Кнопка «Сыграть ещё раз» только возвращает UI к трём закрытым ящикам; UUID следующей партии появится после следующего выбора.
+
+Повтор `POST /games` с тем же `Idempotency-Key` возвращает прежние `gameId` и `commitment` при любом состоянии партии. PostgreSQL uniqueness и `INSERT ... ON CONFLICT DO NOTHING` гарантируют одну строку даже для одновременных запросов; response всегда строится из сохранённой строки. Replay выполняется до проверки лимита открытых игр. Если первый response вместе с `Set-Cookie` потерялся, запрос без cookie восстанавливает исходного владельца по idempotency key и сервер повторно выставляет его cookie. Если валидная cookie принадлежит другому visitor, API отвечает `409 IDEMPOTENCY_KEY_CONFLICT` и не меняет владельца.
 
 Frontend хранит отправленное, но ещё не подтверждённое действие как `pendingMutation`. После timeout, сетевой ошибки, HTTP 409 или ошибки сервера он запрашивает фактическое состояние через `GET /games/{id}`. Пока исход не установлен, выбрать другой ящик или другую стратегию невозможно: пользователь может повторить проверку либо только то же действие. HTTP 404 предлагает начать новую партию. GET состояния выполняется как read-only операция без pessimistic write lock; mutation endpoints продолжают сериализоваться блокировкой строки.
 
@@ -61,17 +63,32 @@ Frontend хранит отправленное, но ещё не подтвер�
 
 | Method | Path | Назначение |
 |---|---|---|
-| `POST` | `/api/v1/games` | Создать партию; ответ содержит только `gameId` и `commitment` |
+| `POST` | `/api/v1/games` | Создать или повторно получить партию; обязателен `Idempotency-Key: UUID`, ответ содержит только `gameId` и `commitment` |
 | `GET` | `/api/v1/games/{id}` | Восстановить разрешённую для состояния часть партии; чужая партия выглядит как `404` |
 | `POST` | `/api/v1/games/{id}/choice` | Передать `{ "box": 1..3 }`, получить открытый и второй закрытый ящики |
 | `POST` | `/api/v1/games/{id}/decision` | Передать `{ "strategy": "SWITCH" }` или `STAY`, получить результат и reveal |
 | `GET` | `/api/v1/stats` | Агрегаты завершённых партий по каждой стратегии |
 | `GET` | `/api/v1/health` | Нечувствительный health backend + database |
 
-Пример с сохранением анонимной cookie:
+Пример с сохранением анонимной cookie и безопасным повтором создания:
 
 ```bash
-curl -sS -c /tmp/joyhub-cookie -X POST http://localhost:8080/api/v1/games
+CREATION_ID="$(uuidgen)"
+
+curl -sS \
+  -H "Idempotency-Key: $CREATION_ID" \
+  -c /tmp/joyhub-cookie \
+  -X POST \
+  http://localhost:8080/api/v1/games
+
+# Повтор с тем же CREATION_ID вернёт ту же партию и повторно выставит cookie,
+# даже если cookie первого ответа не дошла до браузера.
+curl -sS \
+  -H "Idempotency-Key: $CREATION_ID" \
+  -c /tmp/joyhub-cookie \
+  -X POST \
+  http://localhost:8080/api/v1/games
+
 curl -sS -b /tmp/joyhub-cookie \
   -H 'Content-Type: application/json' \
   -d '{"box":3}' \
@@ -112,10 +129,11 @@ commitment = lowercaseHex(SHA-256(UTF-8(canonical)))
 
 ## Схема PostgreSQL
 
-Flyway-миграция [V1__create_game_round.sql](backend/src/main/resources/db/migration/V1__create_game_round.sql) создаёт `game_round`:
+Flyway-миграция [V1__create_game_round.sql](backend/src/main/resources/db/migration/V1__create_game_round.sql) создаёт `game_round`, а [V2__add_creation_request_id.sql](backend/src/main/resources/db/migration/V2__add_creation_request_id.sql) добавляет idempotency token. Для существующих строк V2 безопасно подставляет `id` партии, затем включает `NOT NULL` и unique constraint:
 
 ```text
-id UUID PK                 state CREATED | CHOICE_MADE | COMPLETED
+id UUID PK                 creation_request_id UUID NOT NULL UNIQUE
+state CREATED | CHOICE_MADE | COMPLETED
 key_box INTEGER            nonce VARCHAR(64)        commitment VARCHAR(64) UNIQUE
 initial_choice INTEGER     opened_box INTEGER       choice_at TIMESTAMPTZ
 strategy SWITCH | STAY     final_choice INTEGER     won BOOLEAN
@@ -200,7 +218,7 @@ cd frontend
 npm run test:e2e:full
 ```
 
-Он проверяет отсутствие `POST /games` до первого выбора, порядок `POST /games` → `POST /choice`, сокрытие секрета, восстановимый `CHOICE_MADE`, SWITCH, Web Crypto verification и прирост статистики на одну завершённую партию. Backend integration tests отдельно покрывают REST → transaction → PostgreSQL, ownership, DTO-поля по состояниям и concurrent idempotent decision. CI-конфигурация находится в [.github/workflows/ci.yml](.github/workflows/ci.yml) и запускает backend verify, component tests, build, оба Playwright-набора, Compose validation и Nginx checks.
+Он проверяет отсутствие `POST /games` до первого выбора, UUID в `Idempotency-Key`, повтор create с тем же ответом, порядок `POST /games` → `POST /choice`, сокрытие секрета, восстановимый `CHOICE_MADE`, SWITCH, Web Crypto verification и прирост статистики на одну завершённую партию. Backend integration tests отдельно покрывают REST → transaction → PostgreSQL, миграцию V2, восстановление cookie, конфликт владельцев, лимит и concurrent identical create/decision. CI-конфигурация находится в [.github/workflows/ci.yml](.github/workflows/ci.yml) и запускает backend verify, component tests, build, оба Playwright-набора, Compose validation и Nginx checks.
 
 ## Mobile-first интерфейс
 
@@ -342,7 +360,7 @@ Structured ECS JSON logs доступны через:
 docker compose --env-file .env -f deploy/docker/docker-compose.yml logs -f backend
 ```
 
-В lifecycle logs присутствует `gameId`, но нет secret/nonce. Каждый HTTP-ответ имеет `X-Request-Id`; безопасный внешний health — `/api/v1/health`, внутренний actuator health не публикуется отдельным host-портом.
+В lifecycle logs присутствуют отдельные события `game_created` и `game_create_replayed` с `gameId`, но нет `Idempotency-Key`, secret или nonce. Каждый HTTP-ответ имеет `X-Request-Id`; безопасный внешний health — `/api/v1/health`, внутренний actuator health не публикуется отдельным host-портом.
 
 Перед обновлением backend сделайте backup базы:
 

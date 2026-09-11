@@ -83,8 +83,11 @@ export async function checkHealth(): Promise<void> {
   }
 }
 
-export function createGame(): Promise<CreatedGame> {
-  return request<CreatedGame>("/api/v1/games", { method: "POST" });
+export function createGame(creationRequestId: string): Promise<CreatedGame> {
+  return request<CreatedGame>("/api/v1/games", {
+    method: "POST",
+    headers: { "Idempotency-Key": creationRequestId },
+  });
 }
 
 export function makeChoice(gameId: string, box: BoxNumber): Promise<ChoiceResult> {

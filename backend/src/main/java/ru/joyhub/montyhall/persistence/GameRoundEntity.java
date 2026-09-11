@@ -20,6 +20,9 @@ public class GameRoundEntity {
     @Id
     private UUID id;
 
+    @Column(name = "creation_request_id", nullable = false, unique = true)
+    private UUID creationRequestId;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private GameState state;
@@ -66,8 +69,17 @@ public class GameRoundEntity {
     protected GameRoundEntity() {
     }
 
-    private GameRoundEntity(UUID id, int keyBox, String nonce, String commitment, UUID visitorId, Instant createdAt) {
+    private GameRoundEntity(
+            UUID id,
+            UUID creationRequestId,
+            int keyBox,
+            String nonce,
+            String commitment,
+            UUID visitorId,
+            Instant createdAt
+    ) {
         this.id = id;
+        this.creationRequestId = creationRequestId;
         this.state = GameState.CREATED;
         this.keyBox = keyBox;
         this.nonce = nonce;
@@ -78,13 +90,14 @@ public class GameRoundEntity {
 
     public static GameRoundEntity create(
             UUID id,
+            UUID creationRequestId,
             int keyBox,
             String nonce,
             String commitment,
             UUID visitorId,
             Instant createdAt
     ) {
-        return new GameRoundEntity(id, keyBox, nonce, commitment, visitorId, createdAt);
+        return new GameRoundEntity(id, creationRequestId, keyBox, nonce, commitment, visitorId, createdAt);
     }
 
     public void recordChoice(int initialChoice, int openedBox, Instant at) {
@@ -104,6 +117,10 @@ public class GameRoundEntity {
 
     public UUID getId() {
         return id;
+    }
+
+    public UUID getCreationRequestId() {
+        return creationRequestId;
     }
 
     public GameState getState() {
@@ -141,5 +158,8 @@ public class GameRoundEntity {
     public Boolean getWon() {
         return won;
     }
-}
 
+    public UUID getVisitorId() {
+        return visitorId;
+    }
+}
