@@ -3,10 +3,14 @@ import { expect, test } from "@playwright/test";
 test("real competition: profile → W,W,L → recovery → leaderboard", async ({ page }) => {
   const roundKeys: string[] = [];
   const startKeys: string[] = [];
+  const initialReads = { health: 0, stats: 0, competitionMe: 0 };
   let decisionNumber = 0;
 
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path === "/api/v1/health") initialReads.health += 1;
+    if (request.method() === "GET" && path === "/api/v1/stats") initialReads.stats += 1;
+    if (request.method() === "GET" && path === "/api/v1/competition/me") initialReads.competitionMe += 1;
     if (request.method() === "POST" && path === "/api/v1/competition/runs") {
       startKeys.push(request.headers()["idempotency-key"] ?? "");
       expect(request.headers()["x-joyhub-csrf"]).toBe("1");
@@ -27,8 +31,13 @@ test("real competition: profile → W,W,L → recovery → leaderboard", async (
   });
 
   await page.goto("/");
+  await expect(page.getByRole("button", { name: "Выбрать ящик 1" })).toBeVisible();
+  await expect.poll(() => initialReads.stats).toBe(1);
+  expect(initialReads.health).toBe(0);
+  expect(initialReads.competitionMe).toBe(0);
   await page.getByRole("button", { name: "Соревноваться" }).click();
   await page.getByLabel("Публичное имя").fill("Smoke Игрок");
+  expect(initialReads.competitionMe).toBeGreaterThanOrEqual(1);
   await page.getByRole("button", { name: "Сохранить профиль" }).click();
   await expect(page.getByRole("button", { name: "Начать попытку" })).toBeVisible();
   expect(startKeys).toHaveLength(0);

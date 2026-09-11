@@ -23,16 +23,21 @@ async function installCompetitionApi(options: {
   leaderboardUnavailable?: boolean;
   quotaExhausted?: boolean;
   dailyLimit?: number;
+  holdFirstMe?: boolean;
+  initialActiveRun?: boolean;
+  initialScore?: number;
 } = {}) {
-  let authenticated = false;
-  let runStarted = false;
-  let score = 0;
+  let authenticated = options.initialActiveRun ?? false;
+  let runStarted = options.initialActiveRun ?? false;
+  let score = options.initialScore ?? 0;
   let roundNumber = 0;
   let serverRound: Record<string, unknown> | null = null;
   let releaseChoice: (() => void) | null = null;
+  let releaseMe: (() => void) | null = null;
   const choiceGate = options.holdFirstChoice ? new Promise<void>((resolve) => { releaseChoice = resolve; }) : null;
-  const calls = { profiles: 0, starts: 0, startKeys: [] as string[], rounds: 0, choices: 0, decisions: 0, leaderboard: 0,
-    releaseChoice: () => releaseChoice?.() };
+  const meGate = options.holdFirstMe ? new Promise<void>((resolve) => { releaseMe = resolve; }) : null;
+  const calls = { me: 0, profiles: 0, starts: 0, startKeys: [] as string[], rounds: 0, choices: 0, decisions: 0, leaderboard: 0,
+    releaseChoice: () => releaseChoice?.(), releaseMe: () => releaseMe?.() };
   const gameId = (round: number) => `123e4567-e89b-42d3-a456-42661417400${round}`;
   const nonce = "0011aaff";
 
@@ -57,7 +62,11 @@ async function installCompetitionApi(options: {
     const path = url.pathname;
     if (path === "/api/v1/health") return response({ status: "UP" });
     if (path === "/api/v1/stats") return response(stats);
-    if (path === "/api/v1/competition/me") return response(me());
+    if (path === "/api/v1/competition/me") {
+      calls.me += 1;
+      if (meGate && calls.me === 1) await meGate;
+      return response(me());
+    }
     if (path === "/api/v1/competition/profile") {
       calls.profiles += 1; authenticated = true;
       return response({ player: { publicPlayerId: "p1", publicTag: "JH-ABC123", displayName: "Виктор" } });
@@ -124,6 +133,36 @@ async function enterCompetition(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("competition flow", () => {
+  it("loads competition state only after the user enters the mode", async () => {
+    const calls = await installCompetitionApi({ holdFirstMe: true });
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Соревноваться" })).toBeEnabled();
+    expect(calls.me).toBe(0);
+    await user.click(screen.getByRole("button", { name: "Соревноваться" }));
+    expect(screen.getByRole("heading", { name: "Восстанавливаем соревнование" })).toBeInTheDocument();
+    await waitFor(() => expect(calls.me).toBe(1));
+
+    calls.releaseMe();
+    expect(await screen.findByLabelText("Публичное имя")).toBeEnabled();
+    expect(calls.me).toBe(1);
+  });
+
+  it("restores an active run on entry without starting another run", async () => {
+    const calls = await installCompetitionApi({ initialActiveRun: true, initialScore: 3 });
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(calls.me).toBe(0);
+    await user.click(await screen.findByRole("button", { name: "Соревноваться" }));
+    expect(await screen.findByRole("button", { name: "Выбрать ящик 1" })).toBeEnabled();
+    expect(document.querySelector(".streak-line")).toHaveTextContent("3 победы подряд");
+    expect(calls.me).toBe(1);
+    expect(calls.starts).toBe(0);
+    expect(calls.rounds).toBe(0);
+  });
+
   it("shows the server-configured daily attempt limit before profile creation", async () => {
     await installCompetitionApi({ dailyLimit: 7 });
     const user = userEvent.setup();
@@ -269,7 +308,7 @@ describe("competition flow", () => {
     first.unmount();
 
     render(<App />);
-    await user.click(await screen.findByRole("button", { name: "Продолжить попытку" }));
+    await user.click(await screen.findByRole("button", { name: "Соревноваться" }));
     expect(await screen.findByText("Ваш выбор ящика №1 сохранён. Повторите прежний ход.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Повторить прежнее действие" }));
     expect(await screen.findByRole("button", { name: "Оставить ящик №1" })).toBeEnabled();
@@ -289,8 +328,16 @@ describe("competition flow", () => {
     await user.keyboard("{End}");
     expect(screen.getByRole("tab", { name: "За всё время" })).toHaveAttribute("aria-selected", "true");
     await waitFor(() => expect(calls.leaderboard).toBeGreaterThanOrEqual(2));
+    const meRequestsBeforePause = calls.me;
     await user.click(screen.getByRole("button", { name: "В обычную игру" }));
     expect(await screen.findByRole("button", { name: "Продолжить попытку" })).toBeEnabled();
+    expect(calls.starts).toBe(1);
+    await Promise.resolve();
+    expect(calls.me).toBe(meRequestsBeforePause);
+
+    await user.click(screen.getByRole("button", { name: "Продолжить попытку" }));
+    expect(await screen.findByRole("button", { name: "Выбрать ящик 1" })).toBeEnabled();
+    expect(calls.me).toBe(meRequestsBeforePause + 1);
     expect(calls.starts).toBe(1);
   });
 });

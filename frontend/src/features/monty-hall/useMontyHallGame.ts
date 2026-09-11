@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
-  checkHealth,
   createGame,
   getGameState,
   getStats,
@@ -20,7 +19,6 @@ import type {
 } from "./types";
 
 export type GamePhase =
-  | "booting"
   | "ready"
   | "starting"
   | "start-failed"
@@ -31,15 +29,14 @@ export type GamePhase =
   | "recovering-decision"
   | "recovery-blocked"
   | "completed"
-  | "game-missing"
-  | "unavailable";
+  | "game-missing";
 
 export type PendingMutation =
   | { type: "choice"; box: BoxNumber; creationRequestId: string }
   | { type: "decision"; strategy: Strategy }
   | null;
 
-type RetryAction = "boot" | "repeat-pending" | "recover" | "reset" | null;
+type RetryAction = "repeat-pending" | "recover" | "reset" | null;
 
 export interface MontyHallGameState {
   phase: GamePhase;
@@ -56,7 +53,7 @@ export interface MontyHallGameState {
 }
 
 const initialState: MontyHallGameState = {
-  phase: "booting",
+  phase: "ready",
   game: null,
   choice: null,
   result: null,
@@ -96,6 +93,20 @@ function loadPendingCreation(): PendingChoice | null {
   } catch {
     return null;
   }
+}
+
+function createInitialState(): MontyHallGameState {
+  const pendingCreation = loadPendingCreation();
+  if (!pendingCreation) return initialState;
+
+  return {
+    ...initialState,
+    phase: "start-failed",
+    pendingMutation: pendingCreation,
+    error: `Не удалось подтвердить начало игры. Ваш выбор ящика №${pendingCreation.box} сохранён.`,
+    retryAction: "repeat-pending",
+    retryLabel: `Повторить выбор ящика №${pendingCreation.box}`,
+  };
 }
 
 function savePendingCreation(pending: PendingChoice): void {
@@ -157,7 +168,7 @@ function pendingActionLabel(pending: Exclude<PendingMutation, null>): string {
 }
 
 export function useMontyHallGame() {
-  const [state, setState] = useState(initialState);
+  const [state, setState] = useState(createInitialState);
   const mutationInFlight = useRef(false);
   const recoveryInFlight = useRef(false);
 
@@ -171,48 +182,9 @@ export function useMontyHallGame() {
     }
   }, []);
 
-  const boot = useCallback(async () => {
-    setState((current) => ({
-      ...current,
-      phase: "booting",
-      error: null,
-      retryAction: null,
-      retryLabel: null,
-      statsLoading: true,
-    }));
-
-    const [health, stats] = await Promise.allSettled([checkHealth(), getStats()]);
-    const pendingCreation = loadPendingCreation();
-    const backendAvailable = health.status === "fulfilled";
-    setState((current) => ({
-      ...current,
-      phase: backendAvailable
-        ? pendingCreation ? "start-failed" : "ready"
-        : "unavailable",
-      game: null,
-      choice: null,
-      result: null,
-      pendingMutation: pendingCreation,
-      fairness: null,
-      stats: stats.status === "fulfilled" ? stats.value : current.stats,
-      statsLoading: false,
-      error: backendAvailable
-        ? pendingCreation
-          ? `Не удалось подтвердить начало игры. Ваш выбор ящика №${pendingCreation.box} сохранён.`
-          : null
-        : "Игровой сервер сейчас временно недоступен.",
-      retryAction: backendAvailable
-        ? pendingCreation ? "repeat-pending" : null
-        : "boot",
-      retryLabel: backendAvailable && pendingCreation
-        ? `Повторить выбор ящика №${pendingCreation.box}`
-        : backendAvailable ? null : "Попробовать снова",
-    }));
-  }, []);
-
   useEffect(() => {
-    void boot();
-  }, [boot]);
+    void refreshStats();
+  }, [refreshStats]);
 
   const showCompleted = useCallback((game: CreatedGame, result: CompletedGame) => {
     setState((current) => ({
@@ -471,10 +443,6 @@ export function useMontyHallGame() {
 
   const retry = useCallback(async () => {
     if (mutationInFlight.current || recoveryInFlight.current) return;
-    if (state.retryAction === "boot") {
-      await boot();
-      return;
-    }
     if (state.retryAction === "reset") {
       resetRound();
       return;
@@ -531,7 +499,7 @@ export function useMontyHallGame() {
     } finally {
       mutationInFlight.current = false;
     }
-  }, [boot, performChoice, performDecision, recover, resetRound, state.game, state.pendingMutation, state.retryAction]);
+  }, [performChoice, performDecision, recover, resetRound, state.game, state.pendingMutation, state.retryAction]);
 
   return {
     state,

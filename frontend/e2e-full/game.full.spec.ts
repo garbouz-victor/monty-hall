@@ -2,10 +2,14 @@ import { expect, test } from "@playwright/test";
 
 test("real frontend → backend → PostgreSQL Monty Hall flow", async ({ page, context }) => {
   const mutationRequests: string[] = [];
+  const initialReads = { health: 0, stats: 0, competitionMe: 0 };
   let creationRequestId: string | undefined;
 
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path === "/api/v1/health") initialReads.health += 1;
+    if (request.method() === "GET" && path === "/api/v1/stats") initialReads.stats += 1;
+    if (request.method() === "GET" && path === "/api/v1/competition/me") initialReads.competitionMe += 1;
     if (request.method() === "POST" && path.startsWith("/api/v1/games")) {
       mutationRequests.push(path);
       if (path === "/api/v1/games") {
@@ -16,6 +20,9 @@ test("real frontend → backend → PostgreSQL Monty Hall flow", async ({ page, 
 
   await page.goto("/");
   await expect(page.getByRole("button", { name: "Выбрать ящик 3" })).toBeVisible();
+  await expect.poll(() => initialReads.stats).toBe(1);
+  expect(initialReads.health).toBe(0);
+  expect(initialReads.competitionMe).toBe(0);
   const initialTotal = await page.evaluate(async () => {
     const response = await fetch("/api/v1/stats");
     return (await response.json()).totalCompletedGames as number;

@@ -65,9 +65,11 @@ function clearJournal(): void {
   sessionStorage.removeItem(COMPETITION_COMMAND_STORAGE_KEY);
 }
 
-export function useCompetition() {
+export function useCompetition(enabled: boolean) {
   const [state, setState] = useState<CompetitionState>(initial);
   const busy = useRef(false);
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
 
   const applyMe = useCallback((me: CompetitionMe) => {
     if (!me.authenticated) {
@@ -152,6 +154,7 @@ export function useCompetition() {
   }, []);
 
   const refresh = useCallback(async () => {
+    if (!enabledRef.current) return null;
     try {
       const me = await getCompetitionMe();
       if (me.run) sessionStorage.removeItem(COMPETITION_START_STORAGE_KEY);
@@ -167,7 +170,11 @@ export function useCompetition() {
     }
   }, [applyMe]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    if (!enabled) return;
+    setState((current) => ({ ...current, phase: "loading", error: null }));
+    void refresh();
+  }, [enabled, refresh]);
 
   const saveProfile = useCallback(async (displayName: string) => {
     if (busy.current) return;

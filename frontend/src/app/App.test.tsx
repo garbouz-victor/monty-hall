@@ -23,6 +23,9 @@ interface ApiOptions {
   loseDecisionResponse?: boolean;
   conflictChoiceResponse?: boolean;
   loseCreateResponseOnce?: boolean;
+  failCreate?: boolean;
+  slowStats?: boolean;
+  failStats?: boolean;
   recovery?: RecoveryMode;
 }
 
@@ -34,12 +37,21 @@ async function sha256(value: string): Promise<string> {
 async function installApi(options: ApiOptions = {}) {
   const commitment = await sha256(`v1:${gameId}:2:${nonce}`);
   let releaseChoiceResponse: (() => void) | null = null;
+  let releaseStatsResponse: (() => void) | null = null;
   const choiceResponseGate = options.holdChoiceResponse
     ? new Promise<void>((resolve) => {
         releaseChoiceResponse = resolve;
       })
     : null;
+  const statsResponseGate = options.slowStats
+    ? new Promise<void>((resolve) => {
+        releaseStatsResponse = resolve;
+      })
+    : null;
   const calls = {
+    health: 0,
+    stats: 0,
+    competitionMe: 0,
     creates: 0,
     createKeys: [] as string[],
     choices: [] as number[],
@@ -47,16 +59,30 @@ async function installApi(options: ApiOptions = {}) {
     strategies: [] as string[],
     recoveries: 0,
     releaseChoiceResponse: () => releaseChoiceResponse?.(),
+    releaseStatsResponse: () => releaseStatsResponse?.(),
   };
 
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = new URL(String(input), "https://joy-hub.ru").pathname;
-    if (path === "/api/v1/health") return jsonResponse({ status: "UP" });
-    if (path === "/api/v1/stats") return jsonResponse(stats);
+    if (path === "/api/v1/health") {
+      calls.health += 1;
+      return jsonResponse({ status: "UP" });
+    }
+    if (path === "/api/v1/stats") {
+      calls.stats += 1;
+      if (statsResponseGate) await statsResponseGate;
+      if (options.failStats) throw new TypeError("stats unavailable");
+      return jsonResponse(stats);
+    }
+    if (path === "/api/v1/competition/me") {
+      calls.competitionMe += 1;
+      return jsonResponse({ detail: "not authenticated" }, 401);
+    }
 
     if (path === "/api/v1/games" && init?.method === "POST") {
       calls.creates += 1;
       calls.createKeys.push(new Headers(init.headers).get("Idempotency-Key") ?? "");
+      if (options.failCreate) throw new TypeError("backend unavailable");
       if (options.loseCreateResponseOnce && calls.creates === 1) {
         throw new TypeError("create response lost after commit");
       }
@@ -136,14 +162,43 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("Monty Hall application", () => {
-  it("does not create a server game until the first box is selected", async () => {
+  it("renders a usable casual game and requests only stats on a fresh load", async () => {
     const calls = await installApi();
     render(<App />);
 
-    expect(await screen.findByRole("button", { name: "Выбрать ящик 1" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Выбрать ящик 1" })).toBeEnabled();
+    await waitFor(() => expect(calls.stats).toBe(1));
+    expect(calls.health).toBe(0);
+    expect(calls.competitionMe).toBe(0);
     expect(calls.creates).toBe(0);
     expect(calls.createKeys).toEqual([]);
     expect(calls.choices).toEqual([]);
+  });
+
+  it("keeps the GameBoard usable while background stats are unresolved", async () => {
+    const calls = await installApi({ slowStats: true });
+    render(<App />);
+
+    expect(screen.getByRole("button", { name: "Выбрать ящик 1" })).toBeEnabled();
+    expect(screen.getByText("Загружаем статистику…")).toBeInTheDocument();
+    await waitFor(() => expect(calls.stats).toBe(1));
+    expect(calls.health).toBe(0);
+    expect(calls.competitionMe).toBe(0);
+
+    calls.releaseStatsResponse();
+    expect(await screen.findByText((_, node) => node?.classList.contains("total-games") ?? false))
+      .toHaveTextContent("18 342");
+  });
+
+  it("keeps the GameBoard usable when background stats fail", async () => {
+    const calls = await installApi({ failStats: true });
+    render(<App />);
+
+    expect(screen.getByRole("button", { name: "Выбрать ящик 1" })).toBeEnabled();
+    expect(await screen.findByText("Статистика сейчас недоступна.")).toBeInTheDocument();
+    expect(screen.queryByText("Игровой сервер временно недоступен")).not.toBeInTheDocument();
+    expect(calls.health).toBe(0);
+    expect(calls.competitionMe).toBe(0);
   });
 
   it("creates a game, selects a box, switches and verifies the result", async () => {
@@ -268,6 +323,8 @@ describe("Monty Hall application", () => {
 
     expect(await screen.findByText("Не удалось подтвердить начало игры. Ваш выбор ящика №3 сохранён.")).toBeInTheDocument();
     expect(calls.creates).toBe(0);
+    expect(calls.health).toBe(0);
+    expect(calls.competitionMe).toBe(0);
     expect(screen.getByRole("button", { name: "Выбрать ящик 1" })).toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: "Повторить выбор ящика №3" }));
@@ -386,26 +443,25 @@ describe("Monty Hall application", () => {
     expect(screen.getByText("Статистика по завершённым играм обычного и соревновательного режимов. Считаются партии, а не уникальные игроки.")).toBeInTheDocument();
   });
 
-  it("shows a finite unavailable state and retries without creating a game", async () => {
-    const fetchMock = vi.fn()
-      .mockRejectedValueOnce(new TypeError("offline"))
-      .mockResolvedValueOnce(jsonResponse(stats));
-    vi.stubGlobal("fetch", fetchMock);
+  it("preserves the first choice and idempotency key when the backend is down", async () => {
+    const calls = await installApi({ failCreate: true, failStats: true });
     const user = userEvent.setup();
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Игровой сервер временно недоступен" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Выбрать ящик 3" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Выбрать ящик 3" }));
+    expect(await screen.findByText("Не удалось подтвердить начало игры. Ваш выбор ящика №3 сохранён."))
+      .toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Выбрать ящик 1" })).toBeDisabled();
+    expect(sessionStorage.getItem(PENDING_CREATION_STORAGE_KEY)).not.toBeNull();
 
-    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
-      const path = new URL(String(input), "https://joy-hub.ru").pathname;
-      if (path === "/api/v1/health") return jsonResponse({ status: "UP" });
-      if (path === "/api/v1/stats") return jsonResponse(stats);
-      return jsonResponse({ detail: "unexpected request" }, 500);
-    });
-    await user.click(screen.getByRole("button", { name: "Попробовать снова" }));
-
-    expect(await screen.findByRole("button", { name: "Выбрать ящик 1" })).toBeEnabled();
-    expect(fetchMock).not.toHaveBeenCalledWith("/api/v1/games", expect.anything());
+    await user.click(screen.getByRole("button", { name: "Повторить выбор ящика №3" }));
+    expect(await screen.findByText("Не удалось подтвердить начало игры. Ваш выбор ящика №3 сохранён."))
+      .toBeInTheDocument();
+    expect(calls.createKeys).toHaveLength(2);
+    expect(calls.createKeys[1]).toBe(calls.createKeys[0]);
+    expect(calls.health).toBe(0);
+    expect(calls.competitionMe).toBe(0);
   });
 
   it("resets locally and creates the next game only after another box selection", async () => {

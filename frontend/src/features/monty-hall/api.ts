@@ -76,13 +76,6 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
   }
 }
 
-export async function checkHealth(): Promise<void> {
-  const health = await apiRequest<{ status: string }>("/api/v1/health");
-  if (health.status !== "UP") {
-    throw new ApiError("Игровой сервер временно недоступен.", "SERVER", 503);
-  }
-}
-
 export function createGame(creationRequestId: string): Promise<CreatedGame> {
   return apiRequest<CreatedGame>("/api/v1/games", {
     method: "POST",

@@ -851,18 +851,6 @@ p {
   animation: spin 700ms linear infinite;
 }
 
-.offline-symbol {
-  display: grid;
-  width: 58px;
-  height: 58px;
-  place-items: center;
-  border-radius: 19px;
-  color: #8e2942;
-  background: #ffe2e9;
-  font-size: 2rem;
-  font-weight: 900;
-}
-
 .stats-section {
   margin-top: 18px;
   border: 1px solid rgb(255 255 255 / 13%);

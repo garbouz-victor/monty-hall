@@ -7,10 +7,9 @@ import { Leaderboard } from "../features/competition/Leaderboard";
 import { useCompetition } from "../features/competition/useCompetition";
 
 export function App() {
-  const { state, selectBox, decide, retry, startNewGame, refreshStats } = useMontyHallGame();
-  const competition = useCompetition();
   const [mode, setMode] = useState<"casual" | "competition">("casual");
-  const loading = state.phase === "booting";
+  const { state, selectBox, decide, retry, startNewGame, refreshStats } = useMontyHallGame();
+  const competition = useCompetition(mode === "competition");
 
   useEffect(() => {
     if (competition.state.result) void refreshStats();
@@ -27,24 +26,7 @@ export function App() {
       </header>
 
       <main className={mode === "competition" ? "main--competition" : undefined}>
-        {loading ? (
-          <section className="status-card" aria-live="polite" aria-busy="true">
-            <span className="loader" aria-hidden="true" />
-            <h1>Проверяем игровой сервер</h1>
-            <p>Загружаем состояние сервиса и общую статистику.</p>
-          </section>
-        ) : null}
-
-        {state.phase === "unavailable" ? (
-          <section className="status-card status-card--offline" role="alert">
-            <span className="offline-symbol" aria-hidden="true">⌁</span>
-            <h1>Игровой сервер временно недоступен</h1>
-            <p>Сам сайт работает, но начать новую игру пока нельзя.</p>
-            <button className="button button--primary" type="button" onClick={retry}>Попробовать снова</button>
-          </section>
-        ) : null}
-
-        {!loading && state.phase !== "unavailable" ? mode === "casual" ? (
+        {mode === "casual" ? (
           <>
             <GameBoard state={state} onSelectBox={selectBox} onDecide={decide} onRetry={retry} onNewGame={startNewGame} />
             <section className="competition-invite" aria-labelledby="competition-invite-title">
@@ -67,7 +49,7 @@ export function App() {
               allTimeRank: competition.state.run?.allTimeRank ?? competition.state.me.allTimeRank,
             } : null} />
           </div>
-        ) : null}
+        )}
 
         <StatsSection
           stats={state.stats}

@@ -18,7 +18,7 @@ VPS: Nginx :443
                       └── PostgreSQL 16 (только Docker network)
 ```
 
-Frontend и API имеют один origin, поэтому CORS не нужен. Если локальный компьютер или VPN выключен, Nginx продолжает отдавать статический frontend. Запрос к health завершается за ограниченное время, после чего интерфейс сообщает, что игровой сервер временно недоступен.
+Frontend и API имеют один origin, поэтому CORS не нужен. Если локальный компьютер или VPN выключен, Nginx продолжает отдавать статический frontend. Браузер не проверяет `/api/v1/health` перед показом игры: этот endpoint используется Docker, monitoring и ручной диагностикой. Недоступность backend проявляется при реальном игровом действии и обрабатывается безопасным retry.
 
 Репозиторий разделён по назначению:
 
@@ -54,7 +54,7 @@ CREATED → CHOICE_MADE → COMPLETED
 
 Операции `choice` и `decision` блокируют строку `SELECT ... FOR UPDATE`. Повтор того же `choice` или того же финального `decision` возвращает уже сохранённый ответ. Изменить выбранный ящик, стратегию или завершённую партию нельзя. Поэтому повтор запроса после потери сетевого ответа не увеличивает статистику дважды.
 
-При обычной загрузке frontend делает только `GET /health` и `GET /stats`. Серверная партия создаётся лениво после первого нажатия на ящик: frontend сохраняет выбранный номер и новый UUID в `sessionStorage`, отправляет UUID в обязательном заголовке `Idempotency-Key`, затем последовательно вызывает `POST /games` и отдельный `POST /games/{id}/choice`. Pending creation удаляется из `sessionStorage` только после достоверного подтверждения initial choice: успешного ответа `/choice` либо recovery snapshot в состоянии `CHOICE_MADE` или `COMPLETED`. Кнопка «Сыграть ещё раз» только возвращает UI к трём закрытым ящикам; UUID следующей партии появится после следующего выбора.
+При обычной загрузке игровой интерфейс сразу строится из локального состояния, а `GET /stats` выполняется в фоне и не блокирует ящики. Браузер не вызывает `/health`; `/competition/me` загружается только после нажатия «Соревноваться» и заново сверяется при повторном входе в режим. Серверная партия создаётся лениво после первого нажатия на ящик: frontend сохраняет выбранный номер и новый UUID в `sessionStorage`, отправляет UUID в обязательном заголовке `Idempotency-Key`, затем последовательно вызывает `POST /games` и отдельный `POST /games/{id}/choice`. Pending creation удаляется из `sessionStorage` только после достоверного подтверждения initial choice: успешного ответа `/choice` либо recovery snapshot в состоянии `CHOICE_MADE` или `COMPLETED`. Кнопка «Сыграть ещё раз» только возвращает UI к трём закрытым ящикам; UUID следующей партии появится после следующего выбора.
 
 Повтор `POST /games` с тем же `Idempotency-Key` возвращает прежние `gameId` и `commitment` при любом состоянии партии. PostgreSQL uniqueness и `INSERT ... ON CONFLICT DO NOTHING` гарантируют одну строку даже для одновременных запросов; response всегда строится из сохранённой строки. Replay выполняется до проверки лимита открытых игр. Если первый response вместе с `Set-Cookie` потерялся, запрос без cookie восстанавливает исходного владельца по idempotency key и сервер повторно выставляет его cookie. Если валидная cookie принадлежит другому visitor, API отвечает `409 IDEMPOTENCY_KEY_CONFLICT` и не меняет владельца.
 
@@ -258,7 +258,7 @@ cd frontend
 npm run test:e2e:full
 ```
 
-Он проверяет отсутствие `POST /games` до первого выбора, UUID в `Idempotency-Key`, повтор create с тем же ответом, порядок `POST /games` → `POST /choice`, сокрытие секрета, восстановимый `CHOICE_MADE`, SWITCH, Web Crypto verification и прирост статистики. Competition smoke проходит настоящий профиль → start → W,W,L, теряет реальные ответы победного и проигрышного decision после commit, восстанавливает score без повторного начисления и проверяет leaderboard. Детерминированный random включается только disposable профилем `full-stack-test`; production использует `SecureGameRandomSource`.
+Он проверяет, что fresh browser load делает фоновый `GET /stats`, но не вызывает `/health`, `/competition/me` или `POST /games`; затем проверяет UUID в `Idempotency-Key`, повтор create с тем же ответом, порядок `POST /games` → `POST /choice`, сокрытие секрета, восстановимый `CHOICE_MADE`, SWITCH, Web Crypto verification и прирост статистики. Competition smoke подтверждает lazy `/competition/me`, затем проходит настоящий профиль → start → W,W,L, теряет реальные ответы победного и проигрышного decision после commit, восстанавливает score без повторного начисления и проверяет leaderboard. Детерминированный random включается только disposable профилем `full-stack-test`; production использует `SecureGameRandomSource`.
 
 Backend integration tests покрывают V3, W,W,L, первое поражение, новый run с нуля, replay/quota, конкурентные start/round, credential/CSRF/ownership, московскую границу, переименование и места `1,2,2,4`. Frontend tests закрепляют opt-in, явный start, reload между create-round и choice, lost-decision recovery, pause, periods и обычные регрессии. CI-конфигурация находится в [.github/workflows/ci.yml](.github/workflows/ci.yml) и запускает backend verify, component tests, build, оба Playwright-набора, Compose validation и Nginx checks.
 

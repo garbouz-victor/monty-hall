@@ -8,7 +8,7 @@ const commitment = createHash("sha256")
   .digest("hex");
 
 async function mockApi(page: Page) {
-  const calls = { creates: 0 };
+  const calls = { health: 0, stats: 0, competitionMe: 0, creates: 0 };
   await page.route("**/api/v1/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -16,8 +16,10 @@ async function mockApi(page: Page) {
     let status = 200;
 
     if (path === "/api/v1/health") {
+      calls.health += 1;
       body = { status: "UP", time: "2026-09-10T12:00:00Z" };
     } else if (path === "/api/v1/stats") {
+      calls.stats += 1;
       body = {
         totalCompletedGames: 38,
         switch: { games: 10, wins: 8, losses: 2, winRate: 0.8 },
@@ -25,6 +27,10 @@ async function mockApi(page: Page) {
         theoretical: { switchWinRate: 2 / 3, stayWinRate: 1 / 3 },
         updatedAt: "2026-09-10T12:00:00Z",
       };
+    } else if (path === "/api/v1/competition/me") {
+      calls.competitionMe += 1;
+      status = 401;
+      body = { detail: "not authenticated" };
     } else if (path === "/api/v1/games") {
       calls.creates += 1;
       status = 201;
@@ -59,6 +65,9 @@ test("@mobile new game → select → switch → verified win", async ({ page })
   await page.goto("/");
 
   await expect(page.getByRole("button", { name: "Выбрать ящик 3" })).toBeVisible();
+  await expect.poll(() => calls.stats).toBe(1);
+  expect(calls.health).toBe(0);
+  expect(calls.competitionMe).toBe(0);
   expect(calls.creates).toBe(0);
   await page.getByRole("button", { name: "Выбрать ящик 3" }).click();
   await expect.poll(() => calls.creates).toBe(1);
@@ -116,6 +125,9 @@ test("@mobile stays usable at 360 × 640", async ({ page }) => {
 test("@mobile competition flow, expanded leaders and long names have no overflow", async ({ page }) => {
   let authenticated = false;
   let started = false;
+  let healthRequests = 0;
+  let statsRequests = 0;
+  let meRequests = 0;
   const competitionGameId = "323e4567-e89b-42d3-a456-426614174000";
   const competitionNonce = "aabbccdd";
   const competitionCommitment = createHash("sha256")
@@ -126,14 +138,14 @@ test("@mobile competition flow, expanded leaders and long names have no overflow
     const path = url.pathname;
     let body: unknown = {};
     let status = 200;
-    if (path === "/api/v1/health") body = { status: "UP" };
-    else if (path === "/api/v1/stats") body = { totalCompletedGames: 0,
+    if (path === "/api/v1/health") { healthRequests += 1; body = { status: "UP" }; }
+    else if (path === "/api/v1/stats") { statsRequests += 1; body = { totalCompletedGames: 0,
       switch: { games: 0, wins: 0, losses: 0, winRate: 0 }, stay: { games: 0, wins: 0, losses: 0, winRate: 0 },
-      theoretical: { switchWinRate: 2 / 3, stayWinRate: 1 / 3 }, updatedAt: "2026-09-10T12:00:00Z" };
-    else if (path === "/api/v1/competition/me") body = { authenticated, serverTime: "2026-09-10T12:00:00Z",
+      theoretical: { switchWinRate: 2 / 3, stayWinRate: 1 / 3 }, updatedAt: "2026-09-10T12:00:00Z" }; }
+    else if (path === "/api/v1/competition/me") { meRequests += 1; body = { authenticated, serverTime: "2026-09-10T12:00:00Z",
       timezone: "Europe/Moscow", competitionDate: "2026-09-10", dailyAttemptLimit: 5, remainingAttempts: 4,
       player: authenticated ? { publicPlayerId: "p0", publicTag: "JH-LONG01", displayName: "Очень Длинное Имя 20" } : undefined,
-      todayBest: 0, allTimeBest: 0 };
+      todayBest: 0, allTimeBest: 0 }; }
     else if (path === "/api/v1/competition/profile") { authenticated = true; body = { player: { publicPlayerId: "p0", publicTag: "JH-LONG01", displayName: "Очень Длинное Имя 20" } }; }
     else if (path === "/api/v1/competition/runs") { started = true; body = { replayed: false, run: competitionRun(0) }; }
     else if (path.endsWith("/rounds")) { status = 201; body = { gameId: competitionGameId, commitment: competitionCommitment, roundNumber: 1, run: competitionRun(0), replayed: false }; }
@@ -157,8 +169,13 @@ test("@mobile competition flow, expanded leaders and long names have no overflow
   }
 
   await page.goto("/");
+  await expect(page.getByRole("button", { name: "Выбрать ящик 1" })).toBeVisible();
+  await expect.poll(() => statsRequests).toBe(1);
+  expect(healthRequests).toBe(0);
+  expect(meRequests).toBe(0);
   await page.getByRole("button", { name: "Соревноваться" }).click();
   await page.getByLabel("Публичное имя").fill("Очень Длинное Имя 20");
+  expect(meRequests).toBe(1);
   await page.getByRole("button", { name: "Сохранить профиль" }).click();
   await expect(page.getByRole("button", { name: "Начать попытку" })).toBeVisible();
   expect(started).toBe(false);
